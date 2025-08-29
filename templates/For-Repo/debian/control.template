@@ -1,0 +1,20 @@
+Source: ph
+Section: utils
+Priority: optional
+Maintainer: Pedro Henrique / phkaiser13 <you@example.com>
+Build-Depends: debhelper (>= 11), cmake, pkg-config, libcurl4-openssl-dev, liblua5.3-dev, nlohmann-json3-dev, rustc, cargo
+Standards-Version: 4.1.4
+Homepage: https://github.com/phkaiser13/peitch
+
+Package: ph
+Architecture: any
+Depends: git (>= 1:2.20.0), libcurl4, liblua5.3-0, ${shlibs:Depends}, ${misc:Depends}
+Description: The Polyglot Assistant for Git & DevOps Workflows
+ A modern, extensible, and high-performance command-line tool designed to
+ unify and streamline your development lifecycle by integrating seamlessly
+ with Git, Terraform for infrastructure as code management, and HashiCorp
+ Vault for secure secret handling.
+ .
+ This package provides the 'ph' command-line tool and all necessary
+ components for its operation, including modules and plugins for extended
+ functionality.

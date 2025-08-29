@@ -1,0 +1,62 @@
+name: Build Visual Studio Plugin (vs-peitch)
+
+on:
+  push:
+    paths:
+      - 'vs-peitch/**'
+  pull_request:
+    paths:
+      - 'vs-peitch/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build VSIX Package
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '7.0.x'   # ajuste para a versão que seu projeto usa, ex: '6.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-cache-${{ runner.os }}-${{ hashFiles('**/packages.lock.json', '**/vs-peitch/**/*.csproj') }}
+          restore-keys: |
+            nuget-cache-${{ runner.os }}-
+
+      - name: Restore (dotnet)
+        working-directory: ./vs-peitch
+        run: dotnet restore ./vs-peitch.sln
+
+      - name: Build solution (MSBuild, Release)
+        working-directory: ./vs-peitch
+        # msbuild está disponível em runners Windows (Visual Studio pré-instalado)
+        run: msbuild ./vs-peitch.sln /m /p:Configuration=Release
+
+      - name: Run tests (if any)
+        working-directory: ./vs-peitch
+        run: dotnet test ./vs-peitch.sln --configuration Release
+        continue-on-error: true
+
+      - name: Package step (optional)
+        working-directory: ./vs-peitch
+        run: |
+          echo "If your extension requires explicit packing (vsix), add packing commands here."
+          echo "Many VSIX projects output a .vsix to bin\\Release by default."
+
+      - name: Upload VSIX artifact(s)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vs-peitch-vsix
+          path: |
+            vs-peitch/**/bin/Release/*.vsix
+            vs-peitch/**/bin/*/Release/*.vsix
+          retention-days: 30

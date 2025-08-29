@@ -1,0 +1,29 @@
+#/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+#* File: src/modules/k8s_local_dev/Cargo.toml
+#* This file is the Cargo manifest for the `k8s_local_dev` CLI tool. Unlike
+#* the previous modules, this crate is configured to build a binary executable,
+#* not a dynamic library. Its primary dependency is `clap` for robust
+#* command-line argument parsing. It also includes `tokio` as the async
+#* runtime and `anyhow` for streamlined error handling.
+#* SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "k8s_local_dev"
+version = "0.1.0"
+edition = "2021"
+
+# By default, a crate with a src/main.rs is built as a binary.
+# No [lib] section is needed.
+
+[dependencies]
+# The command-line argument parser for Rust. The "derive" feature enables
+# a declarative, struct-based approach to defining the CLI interface.
+clap = { version = "4.5.4", features = ["derive"] }
+crate-type = ["cdylib"]
+# The async runtime. Even for a CLI, it's useful for managing concurrent
+# operations, like running external commands. The "process" feature is
+# needed to manage child processes asynchronously.
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros", "process"] }
+
+# Ergonomic error handling for applications.
+anyhow = "1.0.80"

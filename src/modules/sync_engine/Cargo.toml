@@ -1,0 +1,42 @@
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+# Cargo.toml - Rust project manifest for the sync_engine module.
+#
+# This file configures the build for the most complex module in our system:
+# the repository synchronization engine. The choice of dependencies here is
+# critical and reflects the engineering challenges of this task.
+#
+# Key Dependencies:
+# - `git2-rs`: The cornerstone of this module. It provides safe, low-level
+#   bindings to `libgit2`, allowing for direct, programmatic manipulation of
+#   Git repositories instead of just calling the `git` CLI. This is essential
+#   for the complex graph traversal and object comparison required for a
+#   robust sync.
+# - `tokio`: For performing network operations (fetch/push) asynchronously.
+# - `serde`: For serializing and deserializing the persistent state of the
+#   sync engine, allowing it to remember its progress between runs.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "sync_engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Pedro Henrique / phkaiser13 <seu-email@exemplo.com>"]
+description = "A ph module for bi-directional repository synchronization."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+lazy_static = "1.4"
+
+# The core library for programmatic Git access.
+git2 = "0.20.2"
+
+# Async runtime for network operations.
+tokio = { version = "1", features = ["full"] }
+
+# For serializing and deserializing the sync state.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

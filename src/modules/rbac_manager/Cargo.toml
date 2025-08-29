@@ -1,0 +1,29 @@
+#/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+#* File: src/modules/rbac_manager/Cargo.toml
+#* This file is the Cargo manifest for the `rbac_manager` module.
+#* It is designed to manage Kubernetes RBAC resources (Roles, ClusterRoles,
+#* RoleBindings, ClusterRoleBindings) to enforce access control policies.
+#* The module is built as a C-dynamic library (`cdylib`) to be loaded by the
+#* ph C core.
+#*
+#* SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "rbac_manager"
+version = "0.1.0"
+edition = "2021"
+authors = ["Pedro Henrique / phkaiser13"]
+description = "A ph module for managing Kubernetes RBAC."
+license = "Apache-2.0"
+repository = "https://github.com/phkaiser13/peitch"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+kube = { version = "0.87.2", features = ["derive"] }
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+anyhow = "1.0.80"
+futures = "0.3.30"

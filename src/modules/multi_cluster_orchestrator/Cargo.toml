@@ -1,0 +1,87 @@
+#/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+#* File: src/modules/multi_cluster_orchestrator/Cargo.toml
+#* This file is the Cargo manifest for the `multi_cluster_orchestrator` module.
+#* It is designed to manage operations across a fleet of Kubernetes clusters
+#* concurrently. The module is built as a C-dynamic library (`cdylib`) to be
+#* loaded by the peitch C core.
+#*
+#* The dependencies are chosen for performance and robustness:
+#* - `kube`: The core Kubernetes client, providing access to the API.
+#* - `tokio`: The async runtime, essential for concurrent I/O operations like
+#*   communicating with multiple cluster APIs simultaneously.
+#* - `serde` & `serde_json`: For robust deserialization of the JSON configuration
+#*   passed from the C core.
+#* - `serde_yaml`: Necessary for parsing Kubernetes manifest files, which are a
+#*   primary payload for deployment actions.
+#* - `anyhow`: For ergonomic and comprehensive error handling, allowing for clear
+#*   error chains and context.
+#* - `futures`: Provides powerful utilities for working with async operations,
+#*   specifically `join_all` which is used to await multiple concurrent cluster
+#*   operations efficiently.
+#* SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "multi_cluster_orchestrator"
+version = "0.1.0"
+edition = "2021"
+authors = ["Pedro Henrique / phkaiser13"]
+description = "A peitch module for orchestrating tasks across multiple Kubernetes clusters."
+license = "Apache-2.0"
+repository = "https://github.com/phkaiser13/peitch" # Example repository
+
+[lib]
+# This configuration is critical for the FFI interface with the C core.
+# It instructs the Rust compiler to produce a C-compatible dynamic library
+# (.so on Linux, .dll on Windows). This allows the C code to dynamically
+# load this module at runtime and call its exported functions.
+crate-type = ["cdylib"]
+
+[dependencies]
+# The primary client for interacting with the Kubernetes API.
+# The "derive" feature is included for potential future use with Custom Resources.
+kube = { version = "0.87.2", features = ["derive"] }
+
+# An asynchronous runtime for Rust. `kube-rs` is built on top of it.
+# "rt-multi-thread" enables the powerful multi-threaded runtime, ideal for
+# handling many concurrent network requests to different clusters.
+# "macros" provides convenient attribute macros like `#[tokio::main]`.
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
+
+# A framework for serializing and deserializing Rust data structures.
+# The "derive" feature is essential for automatically generating the code
+# to parse the JSON configuration into our Rust structs.
+serde = { version = "1.0.197", features = ["derive"] }
+
+# A JSON serialization format implementation for Serde.
+serde_json = "1.0.114"
+
+# A YAML serialization format implementation for Serde. This is crucial
+# for parsing Kubernetes manifest files provided as part of the action payload.
+serde_yaml = "0.9.34"
+
+# A library for flexible and ergonomic error handling. It allows us to return
+# a single, unified error type from functions that can fail in multiple ways,
+# and provides excellent context for debugging.
+anyhow = "1.0.80"
+
+# Provides utilities for working with futures and streams. We specifically use
+# `futures::future::join_all` to concurrently await the completion of tasks
+# dispatched to multiple clusters, which is a major performance enhancement.
+futures = "0.3.30"
+
+# HTTP client for executing HttpGet health probes.
+reqwest = { version = "0.11", features = ["json"] }
+
+# Client for querying Prometheus for health probes.
+prometheus-http-query = "0.2.0"
+
+# For creating distinct, typed errors.
+thiserror = "1.0.57"
+
+# Protocol Buffers implementation for Rust.
+prost = "0.12.3"
+bytes = "1.6.0"
+
+[build-dependencies]
+# Compiles .proto files into Rust code during the build process.
+prost-build = "0.12.3"

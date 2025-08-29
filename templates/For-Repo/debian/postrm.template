@@ -1,0 +1,64 @@
+#!/bin/sh
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+# SPDX-License-Identifier: Apache-2.0
+#
+# Post-removal maintainer script for the 'ph' Debian package.
+# This script is executed by dpkg after the package's files have been removed.
+# Its primary role is to perform cleanup actions when the package is 'purged'.
+
+# Exit immediately if a command exits with a non-zero status.
+set -e
+
+# Define the directory for application's persistent state data.
+# Using /var/lib is standard for state files that are not user-specific.
+APP_STATE_DIR="/var/lib/ph"
+APP_CACHE_DIR="/var/cache/ph"
+APP_LOG_DIR="/var/log/ph"
+
+# The first argument ($1) to this script indicates the action being performed.
+case "$1" in
+    purge)
+        echo "Purging ph system-wide files..."
+        
+        # Remove state directory
+        if [ -d "$APP_STATE_DIR" ]; then
+            rm -rf "$APP_STATE_DIR"
+            echo "Removed ${APP_STATE_DIR}"
+        fi
+        
+        # Remove cache directory
+        if [ -d "$APP_CACHE_DIR" ]; then
+            rm -rf "$APP_CACHE_DIR"
+            echo "Removed ${APP_CACHE_DIR}"
+        fi
+        
+        # Remove log directory (optional, logs might be kept)
+        if [ -d "$APP_LOG_DIR" ]; then
+            rm -rf "$APP_LOG_DIR"
+            echo "Removed ${APP_LOG_DIR}"
+        fi
+        
+        # Remove any leftover configuration in /etc if it exists
+        if [ -d "/etc/ph" ]; then
+            rm -rf "/etc/ph"
+            echo "Removed /etc/ph"
+        fi
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade)
+        # For other actions, we do nothing. On a simple 'remove', configuration
+        # and state files are intentionally left behind in case of reinstallation.
+        ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+# This line is a hook for debhelper. It will automatically add snippets
+# of shell code from /usr/share/debhelper/autoscripts to this script.
+#DEBHELPER#
+
+exit 0

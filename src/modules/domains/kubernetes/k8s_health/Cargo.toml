@@ -1,0 +1,37 @@
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# This file is the Cargo manifest for the `k8s_health` Rust module.
+# It defines the package metadata, dependencies, and compilation settings.
+# The crate is configured to be built as a `cdylib` (C-compatible dynamic
+# library), allowing it to be loaded and called from the C core application
+# via a Foreign Function Interface (FFI).
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "k8s_health"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# This is the crucial part for FFI. It tells rustc to build a dynamic
+# library with a C-compatible ABI, which can be loaded by the C code.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Core Kubernetes client and API type definitions.
+kube = { version = "1.1.0", features = ["runtime", "client"] }
+k8s-openapi = { version = "0.25.0", features = ["v1_28"] }
+
+# The asynchronous runtime needed for the `kube` client.
+tokio = { version = "1.35.1", features = ["macros", "rt-multi-thread"] }
+
+# For robust and easy error handling.
+anyhow = "1.0.79"
+
+# For serializing and deserializing the JSON payload from the C handler.
+serde = { version = "1.0.195", features = ["derive"] }
+serde_json = "1.0.111"
+
+# Provides C-compatible types for the FFI boundary.
+libc = "0.2.152"

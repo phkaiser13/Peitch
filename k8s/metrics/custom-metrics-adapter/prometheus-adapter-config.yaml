@@ -1,0 +1,82 @@
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+# CHANGE SUMMARY:
+# - Reviewed the existing configuration and confirmed its correctness against the requirements.
+# - No functional changes were necessary.
+# - Standardized file-level documentation to clarify the purpose and architecture of this
+#   ConfigMap for maintainability.
+# - Ensured all comments are in English and provide clear context for each configuration key.
+
+# ---
+#
+# Module: Prometheus Adapter Configuration
+#
+# Purpose:
+#   This ConfigMap provides the configuration for the Prometheus Adapter. The adapter's
+#   role is to query Prometheus for specific application metrics and expose them
+#   through the Kubernetes custom and external metrics APIs. This makes them available
+#   to Kubernetes components like the HorizontalPodAutoscaler (HPA) for autoscaling
+#   based on application-level telemetry.
+#
+# Public API Summary:
+#   - Exposes a Kubernetes external metric named `build-queue-length`.
+#
+# Usage Notes:
+#   - This configuration must be mounted into the Prometheus Adapter pod.
+#   - The `seriesQuery` must match the name of the metric exposed by the application
+#     in Prometheus (e.g., `ph_build_queue_length_total`).
+#   - The `name.as` value (`build-queue-length`) must match the metric name used in
+#     the HPA definition (see `k8s/hpa/runner-hpa.yaml`).
+#
+# Example Snippet (from HPA):
+#   ...
+#   metrics:
+#   - type: External
+#     external:
+#       metric:
+#         name: build-queue-length
+#       target:
+#         type: Value
+#         value: "10"
+#   ...
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # The name of this ConfigMap must match the one expected by the Prometheus Adapter deployment.
+  name: adapter-config
+  # This configuration is typically deployed in the same namespace as the adapter itself.
+  namespace: monitoring
+data:
+  config.yaml: |
+    # Rules for exposing metrics through the external.metrics.k8s.io API group.
+    # These are metrics that are not tied to a specific Kubernetes object, such as a
+    # global queue length.
+    external:
+      - # seriesQuery is the PromQL query used to discover the raw time series in Prometheus.
+        # It should be specific enough to select only the desired metric.
+        seriesQuery: '{__name__=~"^ph_build_queue_length_total$"}'
+        # Since our build queue is global and not tied to a specific Kubernetes object,
+        # we do not need to match on Kubernetes resources.
+        resources:
+          # We specify 'template' to provide a fallback if no specific labels
+          # are found on the Prometheus metric.
+          template: <<.Resource>>
+        # This section renames the discovered Prometheus metric for the Kubernetes API.
+        name:
+          # `matches` uses a regex to capture parts of the Prometheus metric name.
+          # Here, it captures the base name from `ph_build_queue_length_total`.
+          matches: "^(.*)_total$"
+          # `as` defines the final name for the metric as it will be exposed in the
+          # Kubernetes external metrics API. This is the name the HPA will request.
+          as: "build-queue-length"
+        # metricsQuery is the final PromQL query template. The adapter uses this template
+        # to fetch the metric's value when requested by the HPA.
+        # `<<.Series>>` and `<<.LabelMatchers>>` are placeholders that the adapter fills in.
+        # The query sums the values of all matching series to get a single integer value
+        # representing the total queue length.
+        metricsQuery: sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)

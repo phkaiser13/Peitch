@@ -1,0 +1,28 @@
+# /* Copyright (C) 2025 Pedro Henrique / phkaiser13
+# * Cargo.toml - Rust project manifest for the devops_automation module.
+# *
+# * This file defines the DevOps automation wrapper crate. It is configured to
+# * build a C-compatible dynamic library (`cdylib`).
+# *
+# * Dependencies:
+# * - `serde` & `serde_json`: Used for robustly parsing the JSON output from
+# *   the `vault` CLI command.
+# * - `once_cell`: Provides a safe, one-time initialization mechanism for
+# *   our FFI static data, avoiding unsafe mutable statics.
+# * - `libc`: Provides the necessary C type definitions for the FFI boundary.
+# *
+# * SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "devops_automation"
+version = "1.0.1"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+once_cell = "1.19"      
+libc = "0.2"

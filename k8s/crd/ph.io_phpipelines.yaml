@@ -1,0 +1,169 @@
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# File: ph.io_phpipelines.yaml
+#
+# This file defines the Custom Resource Definition (CRD) for the phPipeline
+# resource. This is the most comprehensive CRD, providing a declarative,
+# Kubernetes-native way to define entire CI/CD pipelines as code.
+#
+# Architecture:
+# - It establishes the 'phPipeline' kind within the 'ph.io' API group.
+# - The schema is designed to be familiar to users of modern CI/CD systems,
+#   featuring concepts like 'stages' and 'steps'. A pipeline consists of one
+#   or more sequential stages, and each stage contains one or more parallel steps.
+# - Each step is executed in its own container, defined by a specific image,
+#   command, and environment variables. This ensures maximum isolation and
+#   reproducibility.
+# - The 'trigger' section allows pipelines to be initiated automatically from
+#   Git events (e.g., a push to the main branch) or manually.
+# - The ph Operator will be responsible for watching these resources and
+#   orchestrating the creation of Pods (or Jobs) to execute the defined steps.
+# - The `status` subresource provides detailed feedback on pipeline runs,
+#   allowing for easy monitoring and integration with other tools.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: phpipelines.ph.io
+spec:
+  group: ph.io
+  scope: Namespaced
+  names:
+    plural: phpipelines
+    singular: phpipeline
+    kind: phPipeline
+    shortNames:
+      - pgpipe
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      # The status subresource is enabled to allow the operator to update
+      # the status without modifying the user's desired state (the spec).
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - stages
+              properties:
+                trigger:
+                  type: object
+                  description: "Defines what events trigger this pipeline."
+                  properties:
+                    git:
+                      type: object
+                      properties:
+                        branch:
+                          type: string
+                          description: "The Git branch to monitor for events."
+                        events:
+                          type: array
+                          items:
+                            type: string
+                            enum: ["push", "tag"]
+                          description: "List of Git events that trigger the pipeline."
+                stages:
+                  type: array
+                  description: "A list of sequential stages in the pipeline."
+                  items:
+                    type: object
+                    required:
+                      - name
+                      - steps
+                    properties:
+                      name:
+                        type: string
+                        description: "The name of the stage (e.g., 'build', 'test', 'deploy')."
+                      steps:
+                        type: array
+                        description: "A list of parallel steps to execute within the stage."
+                        items:
+                          type: object
+                          required:
+                            - name
+                            - image
+                            - command
+                          properties:
+                            name:
+                              type: string
+                              description: "The name of the step."
+                            stepType:
+                              type: string
+                              description: "The special type of the step, e.g., 'generate-sbom'."
+                              enum: ["generic", "generate-sbom"]
+                              default: "generic"
+                            image:
+                              type: string
+                              description: "The container image to use for executing this step."
+                            command:
+                              type: array
+                              items:
+                                type: string
+                              description: "The command to run inside the container."
+                            env:
+                              type: array
+                              description: "Environment variables to set in the container."
+                              items:
+                                type: object
+                                properties:
+                                  name:
+                                    type: string
+                                  value:
+                                    type: string
+                            outputs:
+                              type: array
+                              description: "Artifacts produced by this step."
+                              items:
+                                type: object
+                                properties:
+                                  name:
+                                    type: string
+                                    description: "Name of the output artifact."
+                                  path:
+                                    type: string
+                                    description: "Path within the container where the artifact is located."
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: ["Pending", "Running", "Succeeded", "Failed"]
+                  description: "The overall status of the last pipeline run."
+                lastRun:
+                  type: object
+                  properties:
+                    pipelineRunID:
+                      type: string
+                      description: "A unique ID for the most recent execution of this pipeline."
+                    startTime:
+                      type: string
+                      format: date-time
+                    completionTime:
+                      type: string
+                      format: date-time
+                    status:
+                      type: string
+                conditions:
+                  type: array
+                  description: "A list of conditions detailing the pipeline's state."
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      message:
+                        type: string

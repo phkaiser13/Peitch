@@ -1,0 +1,55 @@
+
+name: 'Test Workflow'
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build and Run All Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake pkg-config liblua5.4-dev libcurl4-openssl-dev nlohmann-json3-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Configure CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+      - name: Compile Project
+        run: cmake --build build --parallel
+
+      - name: Run C/C++ Unit Tests
+        run: |
+          cd build
+          ctest --output-on-failure
+
+      # FIX: Run individual tests bcz cargo files.
+      - name: Run Rust Unit Tests
+        run: |
+          # Loop through each module directory containing a Cargo.toml and run tests
+          for d in src/modules/*/ ; do
+            if [ -f "${d}Cargo.toml" ]; then
+              echo "--- Running tests in ${d} ---"
+              (cd "$d" && cargo test)
+            fi
+          done
+      
+      - name: Run Integration Tests
+        run: |
+          chmod +x tests/integration_test.sh
+          ./tests/integration_test.sh

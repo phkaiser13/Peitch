@@ -1,0 +1,50 @@
+#/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+#* File: src/modules/release_orchestrator/Cargo.toml
+#* This file is the Cargo manifest for the `release_orchestrator` module. It
+#* defines the package metadata and dependencies required to orchestrate advanced
+#* release strategies by manipulating service mesh custom resources. It is built
+#* as a C-dynamic library (`cdylib`). Key dependencies include `kube` with the
+#* `derive` feature for custom resource definitions, and `schemars` for JSON
+#* schema generation, which is a best practice when defining CRDs.
+#* SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "release_orchestrator"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# Build as a C-compatible dynamic library for the FFI interface.
+crate-type = ["cdylib"]
+
+[dependencies]
+# The primary Kubernetes client. The "derive" feature is crucial for easily
+# defining structs that represent Custom Resources (like Istio's VirtualService).
+kube = { version = "1.1.0", features = ["derive"] }
+
+# Provides access to common Kubernetes API object types like `IntOrString`.
+k8s-openapi = { version = "0.25.0", features = ["v1_28"] }
+
+# Async runtime required by `kube-rs`.
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
+
+# Deserialization framework for parsing the JSON config.
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+
+# Ergonomic error handling.
+anyhow = "1.0.80"
+
+# Used with `kube::CustomResource` to derive JSONSchema implementations.
+schemars = "1.0.4"
+
+# A library for creating and applying JSON Patches (RFC 6902), which is an
+# efficient way to update Kubernetes resources.
+json-patch = "4.0.0"
+async-trait = "0.1.89"
+chrono = { version = "0.4.31", features = ["serde"] }
+signature_verifier = { path = "../signature_verifier" }
+
+# Protocol Buffers implementation for Rust.
+prost = "0.12"
+bytes = "1" # Required by prost

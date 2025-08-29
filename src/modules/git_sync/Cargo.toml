@@ -1,0 +1,53 @@
+#/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+#* File: src/modules/git_sync/Cargo.toml
+#* This file is the Cargo manifest for the `git_sync` module. It defines the
+#* package metadata and dependencies required to perform Git-aware synchronization
+#* against a Kubernetes cluster. It is configured as a C-dynamic library (`cdylib`)
+#* for FFI with the C core. Dependencies include `git2` for native Git operations,
+#* `kube` for cluster interaction, and `tempfile` for securely managing temporary
+#* repository clones.
+#* SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "git_sync"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# Build as a C-compatible dynamic library for the FFI interface.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Kubernetes client for interacting with the cluster state.
+kube = { version = "1.1.0", features = ["runtime", "derive"] }
+
+# Kubernetes OpenAPI bindings (v1.27).
+k8s-openapi = { version = "0.25.0", features = ["v1_27"] }
+
+# Async runtime required by `kube-rs`.
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
+
+# Serialization / Deserialization frameworks.
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+serde_yaml = "0.9.33"
+
+# Ergonomic error handling.
+anyhow = "1.0.80"
+
+# Native Git bindings for Rust, used for cloning and interacting with the repo.
+git2 = "0.20.2"
+
+# A library for creating and managing temporary files and directories.
+tempfile = "3.10.1"
+
+# Diff utilities (useful for drift detection / reconciliation).
+similar = "2.2"
+chrono = "0.4.41"
+octocrab = "0.44.1"
+signature_verifier = { path = "../signature_verifier" }
+thiserror = "1.0"
+
+# Protocol Buffers implementation for Rust.
+prost = "0.12"
+bytes = "1" # Required by prost

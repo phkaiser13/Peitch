@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>ph</id>
+    <version>k8s-prerls-0.0.3-beta</version>
+    <title>ph (Peitch)</title>
+    <authors>Pedro Henrique / phkaiser13</authors>
+    <owners>Pedro Henrique / phkaiser13</owners>
+
+    <licenseUrl>https://github.com/phkaiser13/peitch/blob/main/LICENSE</licenseUrl>
+    <projectUrl>https://github.com/phkaiser13/peitch</projectUrl>
+    <iconUrl>https://raw.githubusercontent.com/phkaiser13/peitch/main/docs/assets/logo.png</iconUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>The Polyglot Assistant for Git &amp; DevOps Workflows. A modern, extensible, and high-performance command-line tool designed to unify and streamline your development lifecycle.</description>
+    <summary>A modern, extensible, and high-performance command-line tool for Git and DevOps workflows.</summary>
+    <releaseNotes>https://github.com/phkaiser13/peitch/releases</releaseNotes>
+    <copyright>Copyright 2025 Pedro Henrique / phkaiser13</copyright>
+    <tags>git devops cli automation workflow admin</tags>
+    <packageSourceUrl>https://github.com/phkaiser13/peitch/tree/main/packaging/chocolatey</packageSourceUrl>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

@@ -1,0 +1,29 @@
+# /* Copyright (C) 2025 Pedro Henrique / phkaiser13
+# * Cargo.toml - Rust project manifest for the ci_cd_manager/parser module.
+# *
+# * This file defines the YAML parser crate. It is configured to build a
+# * C-compatible dynamic library (`cdylib`).
+# *
+# * Dependencies:
+# * - `serde`: The core framework for serializing and deserializing Rust data structures.
+# * - `serde_yaml`: High-performance YAML parser that integrates with Serde.
+# * - `serde_json`: High-performance JSON serializer that integrates with Serde.
+# * - `libc`: Provides the necessary C type definitions for the FFI boundary.
+# *
+# * This setup creates a self-contained, high-performance parsing unit.
+# *
+# * SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "workflow_parser"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9.33"
+serde_json = "1.0"
+libc = "0.2"

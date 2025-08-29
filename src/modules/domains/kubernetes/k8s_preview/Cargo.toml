@@ -1,0 +1,40 @@
+#/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+#* File: src/modules/k8s_preview/Cargo.toml
+#* This file is the Cargo manifest for the `k8s_preview` module. It defines the
+#* package metadata, dependencies, and crucially, the library output type.
+#* It is configured to build a C-compatible dynamic library (`cdylib`) that can be
+#* loaded by the C core via FFI. The dependencies include `kube` for Kubernetes
+#* API interaction, `tokio` as the async runtime, `serde` for deserialization,
+#* and `anyhow` for ergonomic error handling.
+#* SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "k8s_preview"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# This is critical for the FFI interface. It tells rustc to build a C-compatible
+# dynamic library (.so on Linux, .dll on Windows, .dylib on macOS) that the C
+# core can load and call into.
+crate-type = ["cdylib"]
+
+[dependencies]
+# The primary client for interacting with the Kubernetes API.
+kube = { version = "1.1.0", features = ["derive"] }
+
+# An asynchronous runtime for Rust. `kube-rs` is built on top of it.
+# "rt-multi-thread" enables the multi-threaded runtime for handling concurrent operations.
+# "macros" provides convenient attribute macros like `#[tokio::main]`.
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
+
+# A framework for serializing and deserializing Rust data structures efficiently.
+# The "derive" feature is essential for automatically generating serialization code.
+serde = { version = "1.0.197", features = ["derive"] }
+
+# A JSON serialization format for Serde.
+serde_json = "1.0.114"
+
+# A library for flexible error handling, allowing us to return a single, unified
+# error type from functions that can fail in multiple ways.
+anyhow = "1.0.80"

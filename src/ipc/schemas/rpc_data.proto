@@ -1,0 +1,67 @@
+// Copyright (C) 2025 Pedro Henrique / phkaiser13
+// rpc_data.proto - Protocol Buffers schema for inter-module data exchange.
+//
+// This file defines the formal data contract for complex data structures that
+// are passed between different modules, particularly between the Go parser
+// and the C++ visualizer for CI/CD workflows.
+//
+// Using Protocol Buffers provides several key engineering advantages:
+// 1. Strong Typing: The schema is strictly defined and enforced at compile time.
+// 2. Language Agnostic: Code can be generated for Go, C++, and many other
+//    languages from this single source of truth.
+// 3. Efficiency: The binary wire format is compact and fast to parse.
+// 4. Schema Evolution: New fields can be added without breaking older clients.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+// Specifies that we are using the proto3 syntax, which is the modern standard.
+syntax = "proto3";
+
+// A package declaration to prevent naming conflicts with other .proto files.
+package ph.ipc;
+
+// Option to generate code for Go in a specific path, aligning with our
+// project structure. This is a Go-specific directive.
+option go_package = "ph/ipc/schemas";
+
+
+// Represents a single step within a CI/CD job.
+message Step {
+  // A human-readable name for the step, e.g., "Run tests".
+  string name = 1;
+
+  // The actual command to be executed for this step.
+  string run_command = 2;
+}
+
+// Represents a single job within a workflow. A job is a collection of steps.
+message Job {
+  // The unique identifier/name for the job, e.g., "build".
+  string name = 1;
+
+  // The type of runner the job executes on, e.g., "ubuntu-latest".
+  string runs_on = 2;
+
+  // A list of steps to be executed in sequence for this job.
+  // The `repeated` keyword indicates a list or array of the specified type.
+  repeated Step steps = 3;
+}
+
+// The top-level message representing an entire CI/CD workflow file.
+message Workflow {
+  // The overall name of the workflow.
+  string name = 1;
+
+  // A list of all jobs defined in this workflow.
+  repeated Job jobs = 2;
+}
+
+// A standardized structure for reporting errors from Rust modules back to the C core.
+message ErrorPayload {
+  // An error code for programmatic handling (e.g., "KubeError", "InvalidInput").
+  string code = 1;
+  // A human-readable, high-level error message.
+  string message = 2;
+  // Detailed, contextual information, potentially including underlying error chains.
+  string details = 3;
+}

@@ -1,0 +1,49 @@
+#/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+#* Cargo.toml - Rust project manifest for the git_ops module.
+#*
+#* This file configures the Rust build for the `git_ops` module. It defines
+#* essential metadata, dependencies, and, most importantly, the crate type.
+#*
+#* The `[lib]` section with `crate-type = ["cdylib"]` is the key to our
+#* polyglot architecture. It instructs the Rust compiler (rustc) to produce a
+#* C-compatible dynamic library (.so on Linux, .dll on Windows), which can be
+#* loaded by our C core's module loader.
+#*
+#* This refactored version maintains the core dependencies and adds `tempfile`
+#* to the development dependencies to enable more robust integration tests
+#* that require temporary Git repositories.
+#*
+#* SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "git_ops"
+version = "0.2.0"
+edition = "2021"
+authors = ["Pedro Henrique / phkaiser13 <pedro.garcia@vytruve.org>"]
+description = "A ph module for intelligent, workflow-aware Git operations."
+
+[lib]
+# This is the crucial part for FFI. It creates a C-style dynamic library.
+crate-type = ["cdylib"]
+
+[dependencies]
+# `libc` is essential for interacting with C code, providing definitions
+# for C types like `c_char`, `c_int`, etc.
+libc = "0.2"
+
+# For parsing the JSON payload from the C handler
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# For interacting with the Kubernetes API
+kube = { version = "1.1.0", features = ["derive"] }
+# The async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# For ergonomic error handling
+anyhow = "1.0"
+
+[dev-dependencies]
+# `tempfile` is used for creating temporary directories in our integration
+# tests, providing a clean and thread-safe environment for each test run.
+tempfile = "3.8"

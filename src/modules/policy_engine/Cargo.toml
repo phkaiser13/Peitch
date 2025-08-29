@@ -1,0 +1,49 @@
+# /* Copyright (C) 2025 Pedro Henrique / phkaiser13
+# * File: src/modules/policy_engine/Cargo.toml
+# *
+# * This is the manifest file for the 'policy_engine' Rust crate. It defines
+# * essential project metadata, its dependencies, and most importantly,
+# * configures the crate type to 'cdylib'. The 'cdylib' configuration instructs
+# * the Rust compiler (rustc) to generate a dynamic-link library
+# * compatible with the C ABI (.so on Linux, .dll on Windows, .dylib on macOS).
+# * This is crucial for allowing the C application core (ph) to load and
+# * interact with this Rust module through a Foreign Function Interface (FFI).
+# *
+# * SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "policy_engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# This instructs Rust to create a C-compatible library (.so, .dll, .dylib)
+# that can be dynamically loaded by a C executable.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Essential for interfacing with C, providing types like c_char.
+libc = "0.2"
+
+# Serialization/deserialization frameworks for JSON and YAML.
+# We use this to parse the JSON payload coming from C.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9.33"
+
+# Kubernetes client for Rust. We will use this to apply and fetch resources in the cluster.
+# The 'runtime' and 'derive' features are necessary for integration with Tokio and
+# for deriving useful traits in our data models.
+kube = { version = "1.1.0", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.25.0", features = ["v1_28"] } # Kubernetes object types for version 1.28
+
+# Asynchronous runtime, a dependency of 'kube' for handling network I/O operations.
+tokio = { version = "1", features = ["full"] }
+
+# For more ergonomic error handling, allowing the use of the '?' operator
+# on different error types.
+anyhow = "1.0"
+
+# For executing external processes (like conftest, if needed in the future).
+tokio-process-stream = "0.4.1"
+futures = "0.3.30"

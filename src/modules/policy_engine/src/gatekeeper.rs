@@ -1,0 +1,192 @@
+/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+* File: src/modules/policy_engine/src/gatekeeper.rs
+*
+* This module implements the logic for the 'policy apply' subcommand. Its
+* responsibility is to connect to a Kubernetes cluster, read a directory
+* of Rego policies, and apply them as OPA Gatekeeper Custom Resources (CRDs).
+*
+* The process involves two main steps for each policy:
+* 1. Generation and Application of a `ConstraintTemplate`: This resource contains the
+*    Rego code and defines a new type of `Constraint` in the cluster. The name
+*    of the template and the `kind` of the CRD are derived from the .rego filename.
+* 2. Generation and Application of a `Constraint`: This resource instantiates the template,
+*    specifying the parameters and scopes (e.g., which namespaces
+*    or resource types should be checked). The parameters for the
+*    Constraint are read from a corresponding `.parameters.yaml` file.
+*
+* All interactions with the Kubernetes API are done using Server-Side Apply
+* (SSA), which makes the operation idempotent and safe for repeated executions,
+* managing field ownership clearly.
+*
+* SPDX-License-Identifier: Apache-2.0 */
+
+use anyhow::{anyhow, Context, Result};
+use kube::{
+    api::{Api, DynamicObject, Patch, PatchParams},
+    discovery::{ApiResource, Scope},
+    Client,
+};
+use serde_yaml::Value;
+use std::{fs, path::Path};
+
+/// Converts a filename (e.g., "disallow-host-path") to PascalCase (e.g., "DisallowHostPath").
+/// Used to generate the `kind` of the Constraint resource.
+fn to_pascal_case(s: &str) -> String {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            // Capitalizes the first character and appends the rest of the word.
+            match chars.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect()
+}
+
+/// Cleans a filename to be a valid Kubernetes metadata name (lowercase, alphanumeric).
+/// E.g., "disallow-host-path" -> "disallowhostpath"
+fn sanitize_metadata_name(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
+/// Main entry point for the 'apply' logic.
+/// Connects to the cluster, iterates over policy files, and applies them.
+pub async fn apply_policies(policy_repo_path: &str, _cluster_name: Option<&str>) -> Result<()> {
+    // The cluster_name is ignored for now, as `try_default` uses the active kubeconfig context.
+    // It is kept in the signature for future extensibility.
+    println!("[RUST GATEKeeper] Initializing Kubernetes client...");
+    let client = Client::try_default()
+        .await
+        .context("Failed to create Kubernetes client from default kubeconfig.")?;
+    println!("[RUST GATEKEEPER] Kubernetes client initialized successfully.");
+
+    let path = Path::new(policy_repo_path);
+    if !path.is_dir() {
+        return Err(anyhow!(
+            "The policy repository path '{}' is not a valid directory.",
+            policy_repo_path
+        ));
+    }
+
+    // Parameters for Server-Side Apply. The field_manager identifies our controller.
+    let ss_apply = PatchParams::apply("ph-policy-engine").force();
+
+    // Iterates over all files in the policy directory.
+    for entry in fs::read_dir(path).context(format!("Failed to read directory '{}'", policy_repo_path))? {
+        let entry = entry?;
+        let file_path = entry.path();
+
+        // Process only files with the .rego extension.
+        if file_path.is_file() && file_path.extension().map_or(false, |s| s == "rego") {
+            let file_stem = file_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+
+            println!("\n[RUST GATEKEEPER] Processing policy: {}", file_stem);
+
+            // 1. Apply the ConstraintTemplate
+            let template_name = sanitize_metadata_name(file_stem);
+            let template_kind = to_pascal_case(file_stem);
+
+            let rego_code = fs::read_to_string(&file_path)
+                .context(format!("Failed to read Rego file: {:?}", file_path))?;
+
+            // Define the GVK (Group, Version, Kind) for ConstraintTemplates.
+            let gvk = ApiResource::from_gvk(
+                &"templates.gatekeeper.sh/v1".parse()?,
+                "ConstraintTemplate",
+            );
+            let api: Api<DynamicObject> = Api::all_with(client.clone(), &gvk);
+
+            // Build the ConstraintTemplate object dynamically using serde_json.
+            let constraint_template = serde_json::json!({
+                "apiVersion": "templates.gatekeeper.sh/v1",
+                "kind": "ConstraintTemplate",
+                "metadata": {
+                    "name": template_name,
+                    "annotations": {
+                        "description": format!("Policy template generated by 'ph' from {}.rego", file_stem)
+                    }
+                },
+                "spec": {
+                    "crd": {
+                        "spec": {
+                            "names": {
+                                "kind": template_kind
+                            }
+                        }
+                    },
+                    "targets": [{
+                        "target": "admission.k8s.gatekeeper.sh",
+                        "rego": rego_code
+                    }]
+                }
+            });
+
+            // Apply the template to the cluster using Server-Side Apply.
+            api.patch(
+                &template_name,
+                &ss_apply,
+                &Patch::Apply(&constraint_template),
+            )
+            .await
+            .context(format!(
+                "Failed to apply ConstraintTemplate '{}'",
+                template_name
+            ))?;
+            println!(
+                "[RUST GATEKEEPER]   -> ConstraintTemplate '{}' applied successfully.",
+                template_name
+            );
+
+            // 2. Look for and apply the corresponding Constraint
+            let params_path = file_path.with_extension("rego.parameters.yaml");
+            if params_path.exists() {
+                let params_content = fs::read_to_string(&params_path).context(format!(
+                    "Failed to read parameter file: {:?}",
+                    params_path
+                ))?;
+                let constraint_spec: Value = serde_yaml::from_str(&params_content)
+                    .context("Failed to parse Constraint parameters YAML.")?;
+
+                let constraint_name = format!("{}-enforcement", template_name);
+
+                // The Constraint's GVK is derived from the template's name.
+                let constraint_gvk = ApiResource::from_gvk(
+                    &"constraints.gatekeeper.sh/v1beta1".parse()?,
+                    &template_kind,
+                );
+                let constraint_api: Api<DynamicObject> = Api::all_with(client.clone(), &constraint_gvk);
+
+                let constraint = serde_json::json!({
+                    "apiVersion": "constraints.gatekeeper.sh/v1beta1",
+                    "kind": template_kind,
+                    "metadata": {
+                        "name": constraint_name
+                    },
+                    "spec": constraint_spec
+                });
+
+                constraint_api
+                    .patch(&constraint_name, &ss_apply, &Patch::Apply(&constraint))
+                    .await
+                    .context(format!("Failed to apply Constraint '{}'", constraint_name))?;
+                println!(
+                    "[RUST GATEKEEPER]   -> Constraint '{}' applied successfully.",
+                    constraint_name
+                );
+            } else {
+                println!("[RUST GATEKEEPER]   -> No parameter file (.rego.parameters.yaml) found. Skipping Constraint creation.");
+            }
+        }
+    }
+
+    println!("\n[RUST GATEKEEPER] Application of all policies completed.");
+    Ok(())
+}

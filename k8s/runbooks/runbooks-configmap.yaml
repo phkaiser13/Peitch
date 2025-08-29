@@ -1,0 +1,135 @@
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+# CHANGE SUMMARY:
+# - This is a new file created to package the auto-remediation runbook scripts.
+# - It contains the `auto-heal.sh` script, making it available to be mounted as a
+#   volume by Kubernetes Jobs created by the `phAutoHealRule` controller.
+
+# ---
+#
+# Module: k8s/runbooks/runbooks-configmap.yaml
+#
+# Purpose:
+#   This ConfigMap stores the executable runbook scripts used by the auto-remediation
+#   system. By centralizing scripts here, we decouple the remediation logic from the
+#   operator's container image, allowing runbooks to be updated independently.
+#
+# Architecture:
+#   - The `phAutoHealRule` controller creates Kubernetes Jobs in response to alerts.
+#   - Each Job is configured to mount this ConfigMap as a volume at a known path (e.g., `/scripts`).
+#   - The Job's container then executes the appropriate script from this mounted volume.
+#
+# Usage Notes:
+#   - This ConfigMap must be deployed to the same namespace as the `ph-operator`.
+#   - The key of each entry in the `data` section corresponds to the filename that will
+#     be created in the mounted volume.
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: autoheal-runbooks
+  # This ConfigMap should reside in the same namespace as the operator that uses it.
+  namespace: ph-operator
+data:
+  auto-heal.sh: |
+    #!/bin/bash
+
+    # ---[ Script Configuration and Safety ]--------------------------------------
+    #
+    # set -e: Exit immediately if a command exits with a non-zero status.
+    # set -u: Treat unset variables as an error when substituting.
+    # set -o pipefail: The return value of a pipeline is the status of the last
+    #                  command to exit with a non-zero status.
+    #
+    # This trifecta is essential for writing robust and predictable shell scripts.
+    set -euo pipefail
+
+    # ---[ Logging Utilities ]----------------------------------------------------
+    #
+    # A simple, structured logging mechanism to ensure all output is timestamped
+    # and categorized for auditing and debugging.
+    #
+    log_info() {
+        # ISO 8601 format is an unambiguous and universally sortable standard.
+        echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] [INFO] -- $1"
+    }
+
+    log_error() {
+        # Logging errors to stderr is a standard practice.
+        echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] [ERROR] -- $1" >&2
+    }
+
+    # ---[ Main Execution Logic ]-------------------------------------------------
+    #
+    main() {
+        log_info "Auto-heal runbook triggered."
+
+        # ---[ Dependency Verification ]------------------------------------------
+        #
+        # Verify that our primary tool, kubectl, is available in the PATH.
+        # Failing early with a clear message is better than a "command not found" error.
+        #
+        if ! command -v kubectl &> /dev/null; then
+            log_error "kubectl command could not be found. Aborting."
+            exit 1
+        fi
+        log_info "Dependency check passed: kubectl is available."
+
+        # ---[ Variable Validation ]----------------------------------------------
+        #
+        # This script relies on environment variables passed from the Kubernetes Job.
+        # `set -u` will cause an exit if they are not set, but we add explicit checks
+        # here to provide more user-friendly error messages.
+        #
+        : "${ALERT_NAMESPACE:?ERROR: ALERT_NAMESPACE environment variable is not set.}"
+        : "${ALERT_DEPLOYMENT:?ERROR: ALERT_DEPLOYMENT environment variable is not set.}"
+        # The DRY_RUN variable is optional and defaults to "false".
+        DRY_RUN="${DRY_RUN:-false}"
+
+        log_info "Received alert for Deployment: '${ALERT_DEPLOYMENT}' in Namespace: '${ALERT_NAMESPACE}'."
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log_info "DRY_RUN mode is enabled. No changes will be made to the cluster."
+        fi
+
+        # ---[ Remediation Action ]-----------------------------------------------
+        #
+        # The core logic of the runbook. The action is a rollout restart, a common
+        # and safe operation for stateless services that might have entered an
+        # unhealthy state (e.g., CrashLoopBackOff, deadlocked).
+        #
+        log_info "Attempting to perform a rollout restart on the deployment."
+
+        # Build the command in a variable to make the dry-run logic cleaner.
+        local kubectl_command="kubectl --namespace ${ALERT_NAMESPACE} rollout restart deployment/${ALERT_DEPLOYMENT}"
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log_info "DRY_RUN: Would execute the following command:"
+            log_info "> ${kubectl_command}"
+        else
+            log_info "Executing command: ${kubectl_command}"
+            # The actual execution. If kubectl fails (e.g., deployment not found, no
+            # permissions), `set -e` will cause the script to terminate here.
+            if output=$(${kubectl_command}); then
+                log_info "Successfully initiated rollout restart. Kubectl output: ${output}"
+            else
+                # This block is unlikely to be reached with `set -e`, but serves as
+                # a defense-in-depth measure.
+                log_error "Failed to execute kubectl command. Please check permissions and resource names."
+                exit 1
+            fi
+        fi
+
+        log_info "Auto-heal runbook finished successfully."
+    }
+
+    # ---[ Script Entrypoint ]----------------------------------------------------
+    #
+    # This construct ensures that the main logic is only executed when the script
+    # is run directly, a best practice for shell scripting.
+    #
+    main "$@"

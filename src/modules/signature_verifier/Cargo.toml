@@ -1,0 +1,32 @@
+#/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+#* File: src/modules/signature_verifier/Cargo.toml
+#* This file is the Cargo manifest for the `signature_verifier` module.
+#* It provides capabilities to verify container image signatures using Sigstore
+#* and Git commit signatures using Gix.
+#* SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "signature_verifier"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# Build as a C-compatible dynamic library for the FFI interface.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Ergonomic error handling.
+anyhow = "1.0.80"
+
+# A modern, high-performance Git implementation in Rust.
+gix = { version = "0.62.0", features = ["blocking-client"] }
+
+# Deserialization framework.
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+
+# The sigstore crate for Cosign integration.
+sigstore = "0.7.0"
+
+# Async runtime, required by sigstore-rs.
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }

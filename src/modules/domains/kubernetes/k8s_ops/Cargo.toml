@@ -1,0 +1,17 @@
+[package]
+name = "k8s_ops"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kube = { version = "0.87.0", features = ["runtime", "derive"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+k8s-openapi = { version = "0.20.0", features = ["v1_27"] } # For apply_manifest
+anyhow = "1.0" # For easier error handling in apply_manifest
+
+[lib]
+name = "k8s_ops"
+crate-type = ["cdylib"]

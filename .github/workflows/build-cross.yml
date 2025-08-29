@@ -1,0 +1,189 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Peitch Cross-Platform Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-linux-cross:
+    name: Build Linux (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            image: linux-arm64
+            rust_target: aarch64-unknown-linux-gnu
+          - arch: armv7
+            image: linux-armv7
+            rust_target: armv7-unknown-linux-gnueabihf
+          - arch: i686
+            image: linux-x86
+            rust_target: i686-unknown-linux-gnu
+          - arch: ppc64le
+            image: linux-ppc64le
+            rust_target: powerpc64le-unknown-linux-gnu
+          - arch: riscv64
+            image: linux-riscv64
+            rust_target: riscv64gc-unknown-linux-gnu
+          - arch: s390x
+            image: linux-s390x
+            rust_target: s390x-unknown-linux-gnu
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build with dockcross for ${{ matrix.arch }}
+        uses: docker://dockcross/${{ matrix.image }}
+        with:
+          args: >
+            bash -c '
+              set -e
+              
+              echo "--- Installing build dependencies for ${{ matrix.arch }} ---"
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get -qq update
+              apt-get -qq install -y \
+                build-essential \
+                libssl-dev \
+                pkg-config \
+                liblua5.4-dev \
+                libcurl4-openssl-dev \
+                nlohmann-json3-dev \
+                curl \
+                ca-certificates
+
+              echo "--- Installing Rust ---"
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              source "$HOME/.cargo/env"
+
+              echo "--- Adding Rust target for ${{ matrix.arch }} ---"
+              rustup target add ${{ matrix.rust_target }}
+
+              echo "--- Configuring CMake ---"
+              cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+              echo "--- Compiling Project ---"
+              cmake --build build --parallel
+
+              echo "--- Packaging Artifacts ---"
+              mkdir -p /work/release
+              tar -czvf /work/release/ph-linux-${{ matrix.arch }}.tar.gz -C build/bin .
+
+              echo "--- Build complete for ${{ matrix.arch }} ---"
+            '
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ph-linux-${{ matrix.arch }}
+          path: release/ph-linux-${{ matrix.arch }}.tar.gz
+          retention-days: 5
+
+  build-windows-arm64:
+    name: Build Windows (ARM64)
+    runs-on: windows-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_TRIPLET: arm64-windows
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: aarch64-pc-windows-msvc
+
+      - name: Install vcpkg and dependencies
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          cd $env:VCPKG_ROOT
+          .\bootstrap-vcpkg.bat
+          .\vcpkg.exe install curl lua nlohmann-json --triplet arm64-windows
+        shell: pwsh
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" -A ARM64 `
+            -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_BUILD_TYPE=Release
+        shell: pwsh
+
+      - name: Build Project
+        run: cmake --build build --config Release --parallel
+        shell: pwsh
+      
+      - name: Copy Runtime DLLs
+        run: |
+          $vcpkgBinDir = "${{ env.VCPKG_ROOT }}/installed/arm64-windows/bin"
+          $targetBinDir = "build/bin/Release"
+          Get-ChildItem -Path $vcpkgBinDir -Filter "*.dll" | Copy-Item -Destination $targetBinDir -Force
+        shell: pwsh
+
+      - name: Package Artifacts
+        run: |
+          $releaseDir = "release"
+          $buildBinDir = "build/bin/Release"
+          New-Item -ItemType Directory -Force -Path $releaseDir
+          Compress-Archive -Path "$buildBinDir/*" -DestinationPath "$releaseDir/ph-windows-arm64.zip"
+        shell: pwsh
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ph-windows-arm64
+          path: release/ph-windows-arm64.zip
+          retention-days: 5
+
+  build-freebsd:
+    name: Build FreeBSD (x86_64)
+    runs-on: macos-12 # Required by the vmactions/freebsd-vm action
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          mem: 4096
+          run: |
+            echo "--- Installing dependencies on FreeBSD ---"
+            pkg install -y \
+              bash \
+              cmake \
+              curl \
+              git \
+              lua54 \
+              nlohmann-json \
+              pkgconf \
+              rust
+            
+            echo "--- Configuring CMake ---"
+            # The code is already checked out in the workspace
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+              -DLUA_INCLUDE_DIR=/usr/local/include/lua54 \
+              -DLUA_LIBRARY=/usr/local/lib/liblua-5.4.so
+
+            echo "--- Compiling Project ---"
+            cmake --build build --parallel
+
+            echo "--- Packaging Artifacts ---"
+            mkdir -p release
+            tar -czvf release/ph-freebsd-x86_64.tar.gz -C build/bin .
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ph-freebsd-x86_64
+          path: release/ph-freebsd-x86_64.tar.gz
+          retention-days: 5

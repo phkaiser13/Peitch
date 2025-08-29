@@ -1,0 +1,90 @@
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# File: Cargo.toml
+#
+# This file is the manifest for the ph-operator Rust project. It defines the
+# package metadata, dependencies, and binary targets. The selection of
+# dependencies is critical for building a robust, production-grade Kubernetes
+# operator.
+#
+# Architecture:
+# - This project builds a single binary named 'ph_operator', as defined in the
+#   [[bin]] section.
+# - It relies heavily on the 'kube' ecosystem of crates, which provide the
+#   foundational tools for interacting with the Kubernetes API.
+# - 'tokio' is chosen as the asynchronous runtime, which is standard for
+#   high-performance network services and operators in Rust.
+# - 'tracing' is used for structured, context-aware logging, which is vastly
+#   superior to simple print statements for debugging and monitoring in a
+#   distributed environment.
+# - 'thiserror' is included for ergonomic and precise error handling.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+[package]
+name = "ph-operator"
+version = "0.1.0"
+edition = "2021"
+
+# Defines the output binary for our operator.
+[[bin]]
+name = "ph_operator"
+path = "src/main.rs"
+
+[dependencies]
+# The core Kubernetes client and runtime library for Rust.
+# Features enabled:
+# - 'runtime': Provides the Controller and Reflector APIs for building operators.
+# - 'derive': Enables the CustomResource derive macro, which is essential for
+#             creating strongly-typed Custom Resource (CR) structs.
+kube = { version = "1.1.0", features = ["runtime", "derive"] }
+
+# High-level abstractions for building controllers. While part of 'kube',
+# it's good practice to list it explicitly when it's a core part of the design.
+kube-runtime = "1.0.1"
+
+# The asynchronous runtime for Rust. The operator's reconciliation loops will
+# run as async tasks managed by Tokio.
+# Features enabled:
+# - 'rt-multi-thread': Enables the multi-threaded scheduler for parallel task execution.
+# - 'macros': Provides attribute macros like `#[tokio::main]` for convenience.
+tokio = { version = "1.35.1", features = ["rt-multi-thread", "macros"] }
+
+# The 'futures' crate provides utilities for working with asynchronous operations.
+futures = "0.3.30"
+
+# A powerful framework for instrumenting Rust programs to collect structured,
+# event-based diagnostic information.
+tracing = "0.1.40"
+
+# A utility for creating custom error types with minimal boilerplate.
+thiserror = "2.0.16"
+
+# Deserialization/Serialization framework. Essential for converting between
+# Kubernetes' JSON/YAML and our strongly-typed Rust structs.
+serde = "1.0.195"
+serde_json = "1.0.111"
+
+# Procedural macro for generating schemas from Rust types. Used by the kube
+# derive macro to validate our Custom Resource Definitions.
+schemars = "1.0.4"
+
+# Subscriber for the 'tracing' framework that allows configuring logging
+# levels and output formats via environment variables (e.g., RUST_LOG).
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "registry", "opentelemetry"] }
+http = "1.3.1"
+tempfile = "3.21.0"
+chrono = "0.4.41"
+opentelemetry = { version = "0.21.0", features = ["rt-tokio"] }
+opentelemetry-jaeger = { version = "0.20.0", features = ["rt-tokio"] }
+tracing-opentelemetry = "0.22.0"
+
+# -- Phgit Internal Modules --
+
+# Provides functionality for verifying container image signatures.
+signature_verifier = { path = "../../modules/signature_verifier" }
+
+# Provides a convenient, ergonomic error handling library.
+anyhow = "1.0"

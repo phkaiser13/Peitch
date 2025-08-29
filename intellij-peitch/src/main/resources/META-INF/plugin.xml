@@ -1,0 +1,36 @@
+<idea-plugin>
+    <id>com.example.intellij-peitch</id>
+    <name>Peitch</name>
+    <vendor email="pedro.garcia@vytruve.org" url="truvesoftware.com/peitch">phdev13</vendor>
+
+    <description><![CDATA[
+    Um plugin simples para IntelliJ IDEA que demonstra funcionalidades básicas.
+    Este é um plugin inicial que será expandido com mais recursos no futuro.
+    ]]></description>
+
+    <change-notes><![CDATA[
+    <h3>1.0.0</h3>
+    <ul>
+        <li>Versão inicial do plugin</li>
+        <li>Configuração básica implementada</li>
+    </ul>
+    ]]></change-notes>
+
+    <!-- Product and plugin compatibility requirements -->
+    <!-- https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
+    <depends>com.intellij.modules.platform</depends>
+
+    <!-- Extension points defined by the plugin -->
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Add your extensions here -->
+    </extensions>
+
+    <actions>
+        <action id="com.example.peitch.HelloAction" 
+                class="com.example.peitch.HelloAction" 
+                text="Hello Peitch" 
+                description="Uma ação de exemplo">
+            <add-to-group group-id="ToolsMenu" anchor="first"/>
+        </action>
+    </actions>
+</idea-plugin>

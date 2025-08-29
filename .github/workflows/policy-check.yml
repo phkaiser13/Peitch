@@ -1,0 +1,54 @@
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# File: policy-check.yml
+#
+# This workflow integrates Policy-as-Code checks directly into the pull request
+# lifecycle. It uses the 'conftest' tool to validate Kubernetes manifest files
+# against a set of policies written in the Rego language.
+#
+# Architecture:
+# - Triggered on every pull request targeting the main branch.
+# - Checks out the code to access both the manifests to be tested and the
+#   policy files.
+# - Uses a dedicated action to install the 'conftest' binary, ensuring the
+#   correct version and platform compatibility.
+# - Executes 'conftest' to test all manifest files against all defined policies.
+# - If any policy check fails, the workflow step will fail, blocking the PR
+#   from being merged until the issues are resolved. This acts as a quality gate.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+name: "🛡️ Policy-as-Code Validation"
+
+on:
+  pull_request:
+    branches:
+      - 'main' # This check runs only on PRs targeting the main branch.
+    paths:
+      - 'k8s/**' # Optimization: only run if k8s files are changed.
+
+jobs:
+  policy_check:
+    name: "✅ Validate Manifests with Conftest"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Only needs read access to check out the code.
+
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+
+      # Step 2: Install Conftest
+      # This community action simplifies the installation of the conftest binary.
+      - name: "Install Conftest"
+        uses: sigstore/conftest-installer@v0.4.0
+
+      # Step 3: Run Conftest validation
+      # This command tells conftest to test all files within the 'k8s/' directory
+      # (excluding the policies themselves) against the policy definitions
+      # located in 'k8s/policies/'. The '-o standard' flag provides clear,
+      # human-readable output.
+      - name: "Run Conftest"
+        run: conftest test k8s/ --policy k8s/policies -o standard

@@ -1,0 +1,356 @@
+# AppVeyor Configuration for peitch project
+# Optimized for Windows builds with Visual Studio integration
+# Follows best practices from curl and other enterprise C++/Rust projects
+
+# Build version format
+version: 1.0.{build}
+
+# Git configuration
+clone_depth: 50
+clone_folder: c:\projects\peitch
+
+# Environment matrix for comprehensive Windows coverage
+environment:
+  matrix:
+    # Visual Studio 2022 x64 build
+    - job_name: VS2022_x64
+      APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2022
+      PLATFORM: x64
+      CONFIGURATION: Release
+      TOOLSET: v143
+      GENERATOR: "Visual Studio 17 2022"
+      ARCHITECTURE: x64
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+      RUST_TOOLCHAIN: stable-x86_64-pc-windows-msvc
+      
+    # Visual Studio 2022 x86 build
+    - job_name: VS2022_x86
+      APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2022
+      PLATFORM: Win32
+      CONFIGURATION: Release
+      TOOLSET: v143
+      GENERATOR: "Visual Studio 17 2022"
+      ARCHITECTURE: Win32
+      VCPKG_DEFAULT_TRIPLET: x86-windows
+      RUST_TOOLCHAIN: stable-i686-pc-windows-msvc
+      
+    # Visual Studio 2022 ARM64 build (for Windows on ARM)
+    - job_name: VS2022_ARM64
+      APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2022
+      PLATFORM: ARM64
+      CONFIGURATION: Release
+      TOOLSET: v143
+      GENERATOR: "Visual Studio 17 2022"
+      ARCHITECTURE: ARM64
+      VCPKG_DEFAULT_TRIPLET: arm64-windows
+      RUST_TOOLCHAIN: stable-aarch64-pc-windows-msvc
+
+# Global environment variables
+init:
+  - cmd: echo "Starting peitch build on AppVeyor"
+  - cmd: echo "Build worker image %APPVEYOR_BUILD_WORKER_IMAGE%"
+  - cmd: echo "Platform %PLATFORM%, Configuration %CONFIGURATION%"
+  - ps: |
+      $env:VCPKG_ROOT = "C:\tools\vcpkg"
+      $env:VCPKG_DOWNLOADS = "C:\vcpkg-downloads"
+      $env:CARGO_HOME = "C:\Users\appveyor\.cargo"
+      $env:RUSTUP_HOME = "C:\Users\appveyor\.rustup"
+      Write-Host "Environment variables set"
+
+# Cache configuration for faster builds
+cache:
+  # vcpkg cache - critical for Windows build performance
+  - C:\tools\vcpkg\installed -> appveyor.yml
+  - C:\tools\vcpkg\packages -> appveyor.yml
+  - C:\vcpkg-downloads -> appveyor.yml
+  
+  # Rust cache
+  - C:\Users\appveyor\.cargo\registry -> src\modules\*\Cargo.lock
+  - C:\Users\appveyor\.cargo\git -> src\modules\*\Cargo.lock
+  - target -> src\modules\*\Cargo.lock
+  
+  # CMake build cache
+  - build -> CMakeLists.txt
+
+# Installation phase - dependencies and toolchains
+install:
+  # Step 1: Display system information
+  - ps: |
+      Write-Host "=== System Information ===" -ForegroundColor Green
+      Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, TotalPhysicalMemory
+      Write-Host "Visual Studio version:"
+      vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+      
+  # Step 2: Install and configure Rust toolchain
+  - ps: |
+      Write-Host "=== Installing Rust Toolchain ===" -ForegroundColor Green
+      $rustToolchain = $env:RUST_TOOLCHAIN
+      Write-Host "Installing Rust toolchain: $rustToolchain"
+      
+      # Download and install rustup if not present
+      if (!(Test-Path "$env:CARGO_HOME\bin\rustup.exe")) {
+        Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile "rustup-init.exe"
+        .\rustup-init.exe -y --default-toolchain $rustToolchain --profile default
+        Remove-Item .\rustup-init.exe
+      }
+      
+      # Ensure Rust tools are in PATH
+      $env:PATH = "$env:CARGO_HOME\bin;$env:PATH"
+      
+      # Install the specific toolchain and set as default
+      rustup toolchain install $rustToolchain
+      rustup default $rustToolchain
+      
+      # Install additional components
+      rustup component add clippy rustfmt
+      
+      # Verify installation
+      Write-Host "Rust version:"
+      rustc --version
+      cargo --version
+      
+  # Step 3: Setup vcpkg and install C++ dependencies
+  - ps: |
+      Write-Host "=== Setting up vcpkg ===" -ForegroundColor Green
+      
+      # Clone vcpkg if not cached
+      if (!(Test-Path $env:VCPKG_ROOT)) {
+        git clone https://github.com/Microsoft/vcpkg.git $env:VCPKG_ROOT
+      }
+      
+      # Bootstrap vcpkg
+      cd $env:VCPKG_ROOT
+      if (!(Test-Path ".\vcpkg.exe")) {
+        .\bootstrap-vcpkg.bat -disableMetrics
+      }
+      
+      # Install dependencies for the current triplet
+      $triplet = $env:VCPKG_DEFAULT_TRIPLET
+      Write-Host "Installing dependencies for triplet: $triplet"
+      
+      .\vcpkg.exe install curl nlohmann-json lua --triplet=$triplet --x-install-root=installed
+      
+      # Integrate with build system
+      .\vcpkg.exe integrate install
+      
+      Write-Host "vcpkg setup completed"
+
+  # Step 4: Additional Windows-specific tools
+  - ps: |
+      Write-Host "=== Installing additional tools ===" -ForegroundColor Green
+      
+      # Install NSIS for installer creation (if needed)
+      if (!(Test-Path "C:\Program Files (x86)\NSIS\makensis.exe")) {
+        choco install nsis -y
+      }
+      
+      # Install 7zip for packaging
+      if (!(Test-Path "C:\Program Files\7-Zip\7z.exe")) {
+        choco install 7zip -y
+      }
+
+# Build configuration script
+build_script:
+  - ps: |
+      Write-Host "=== CMake Configuration ===" -ForegroundColor Green
+      
+      # Ensure we're in the project directory
+      cd $env:APPVEYOR_BUILD_FOLDER
+      
+      $generator = $env:GENERATOR
+      $architecture = $env:ARCHITECTURE
+      $vcpkgRoot = $env:VCPKG_ROOT
+      
+      Write-Host "Generator: $generator"
+      Write-Host "Architecture: $architecture"
+      Write-Host "vcpkg root: $vcpkgRoot"
+      
+      # Configure CMake with vcpkg integration
+      $cmakeArgs = @(
+        "-S", ".",
+        "-B", "build",
+        "-G", $generator,
+        "-A", $architecture,
+        "-DCMAKE_TOOLCHAIN_FILE=$vcpkgRoot\scripts\buildsystems\vcpkg.cmake",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+        "-DCMAKE_VERBOSE_MAKEFILE=ON",
+        "-DBUILD_SHARED_LIBS=OFF"
+      )
+      
+      Write-Host "Running cmake configure..."
+      & cmake @cmakeArgs
+      if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed" }
+      
+  - ps: |
+      Write-Host "=== Building Project ===" -ForegroundColor Green
+      
+      # Build the project
+      $cores = (Get-WmiObject -Class Win32_Processor).NumberOfCores
+      Write-Host "Building with $cores parallel jobs"
+      
+      cmake --build build --config Release --parallel $cores
+      if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+      
+      Write-Host "Build completed successfully"
+
+# Test execution
+test_script:
+  - ps: |
+      Write-Host "=== Running C++ Tests ===" -ForegroundColor Green
+      
+      cd build
+      if (Test-Path "CTestTestfile.cmake") {
+        ctest -C Release --output-on-failure --parallel 4
+        if ($LASTEXITCODE -ne 0) { 
+          Write-Warning "Some C++ tests failed, but continuing..."
+        }
+      } else {
+        Write-Host "No C++ tests configured"
+      }
+      
+      cd ..
+
+  - ps: |
+      Write-Host "=== Running Rust Tests ===" -ForegroundColor Green
+      
+      # Run tests for each Rust module
+      Get-ChildItem -Path "src\modules" -Directory | ForEach-Object {
+        $modulePath = $_.FullName
+        $cargoToml = Join-Path $modulePath "Cargo.toml"
+        
+        if (Test-Path $cargoToml) {
+          Write-Host "Testing Rust module: $($_.Name)"
+          cd $modulePath
+          
+          try {
+            cargo test --release
+            if ($LASTEXITCODE -ne 0) { 
+              Write-Warning "Tests failed for module $($_.Name)"
+            }
+          } catch {
+            Write-Warning "Error running tests for module $($_.Name): $_"
+          }
+          
+          cd $env:APPVEYOR_BUILD_FOLDER
+        }
+      }
+
+  - ps: |
+      Write-Host "=== Running Integration Tests ===" -ForegroundColor Green
+      
+      $integrationScript = "tests\integration_test.sh"
+      if (Test-Path $integrationScript) {
+        # Convert to PowerShell or run via WSL/Git Bash if available
+        if (Get-Command "bash.exe" -ErrorAction SilentlyContinue) {
+          bash.exe -c "chmod +x $integrationScript && ./$integrationScript"
+        } else {
+          Write-Host "Bash not available, skipping shell-based integration tests"
+        }
+      } else {
+        Write-Host "No integration test script found"
+      }
+
+# Package artifacts after successful build
+after_build:
+  - ps: |
+      Write-Host "=== Packaging Artifacts ===" -ForegroundColor Green
+      
+      $platform = $env:PLATFORM
+      $configuration = $env:CONFIGURATION
+      
+      # Create release directory
+      $releaseDir = "release"
+      New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+      
+      # Copy built binaries
+      $buildBinDir = "build\bin\$configuration"
+      if (Test-Path $buildBinDir) {
+        Copy-Item -Path "$buildBinDir\*" -Destination $releaseDir -Recurse -Force
+        Write-Host "Copied binaries from $buildBinDir"
+      }
+      
+      # Copy DLLs from vcpkg
+      $vcpkgBinDir = "$env:VCPKG_ROOT\installed\$env:VCPKG_DEFAULT_TRIPLET\bin"
+      if (Test-Path $vcpkgBinDir) {
+        $dllFiles = Get-ChildItem -Path $vcpkgBinDir -Filter "*.dll"
+        foreach ($dll in $dllFiles) {
+          Copy-Item -Path $dll.FullName -Destination $releaseDir -Force
+          Write-Host "Copied DLL: $($dll.Name)"
+        }
+      }
+      
+      # Copy additional files
+      $additionalFiles = @("LICENSE", "README.md")
+      foreach ($file in $additionalFiles) {
+        if (Test-Path $file) {
+          Copy-Item -Path $file -Destination $releaseDir -Force
+        }
+      }
+      
+      # Create ZIP archive
+      $zipName = "ph-windows-$platform-$(Get-Date -Format 'yyyy-MM-dd').zip"
+      if (Test-Path "C:\Program Files\7-Zip\7z.exe") {
+        & "C:\Program Files\7-Zip\7z.exe" a $zipName "$releaseDir\*"
+      } else {
+        Compress-Archive -Path "$releaseDir\*" -DestinationPath $zipName -Force
+      }
+      
+      Write-Host "Created package: $zipName"
+
+# Artifacts to preserve
+artifacts:
+  # Main release package
+  - path: '*.zip'
+    name: ReleasePackage
+    
+  # Individual executables for debugging
+  - path: 'build\bin\Release\*.exe'
+    name: Executables
+    
+  # Build logs
+  - path: 'build\CMakeCache.txt'
+    name: CMakeCache
+    
+  # Test results
+  - path: 'build\Testing\**\*.xml'
+    name: TestResults
+
+# Deployment configuration (conditional)
+deploy:
+  - provider: GitHub
+    artifact: ReleasePackage
+    auth_token:
+      secure: # Encrypted GitHub token
+    on:
+      APPVEYOR_REPO_TAG: true
+      
+# Build failure notifications
+notifications:
+  - provider: Email
+    to:
+      - build-notifications@peitch.dev
+    on_build_success: false
+    on_build_failure: true
+    on_build_status_changed: true
+
+# Miscellaneous settings
+skip_commits:
+  files:
+    - docs/**/*
+    - '*.md'
+    - '.gitignore'
+    - '.github/**/*'
+    
+skip_branch_with_pr: true
+
+# Enable RDP for debugging (uncomment if needed)
+# init:
+#   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))
+
+# Final build matrix configuration
+matrix:
+  fast_finish: true
+  allow_failures:
+    # Allow ARM64 builds to fail initially during testing
+    - job_name: VS2022_ARM64

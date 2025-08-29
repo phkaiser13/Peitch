@@ -1,0 +1,50 @@
+#/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+#* File: src/modules/secret_manager/Cargo.toml
+#* This file is the Cargo manifest for the `secret_manager` module. It is
+#* architected to interface with various secret management backends and
+#* synchronize secrets into Kubernetes. It is built as a C-dynamic library.
+#*
+#* The dependency choices reflect a commitment to robustness and performance:
+#* - `kube`: For all interactions with the Kubernetes API, specifically for
+#*   creating and updating `Secret` objects idempotently.
+#* - `tokio`: The async runtime is essential for non-blocking I/O, whether it's
+#*   making HTTP requests to Vault or executing external processes for SOPS.
+#* - `serde`, `serde_json`: For deserializing the FFI configuration.
+#* - `anyhow`: Provides a rich, context-aware error handling system, crucial
+#*   for diagnosing failures across different secret providers.
+#* - `futures`: Used for executing multiple secret fetches concurrently.
+#* - `async-trait`: A necessity for using async functions within our `SecretProvider`
+#*   trait, which is the core of our abstraction strategy.
+#* - `reqwest`: A modern, powerful, and ergonomic HTTP client for interacting
+#*   with the Vault API. The `json` feature is enabled for seamless serde integration.
+#* - `base64`: Required for encoding secret data into the format expected by
+#*   the Kubernetes API for `Secret` objects.
+#* - `serde_yaml`: Used for parsing the output of tools like `kubeseal`.
+#* SPDX-License-Identifier: Apache-2.0 */
+
+[package]
+name = "secret_manager"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# Build as a C-compatible dynamic library for the FFI interface.
+crate-type = ["cdylib"]
+
+[dependencies]
+kube = { version = "1.1.0", features = ["derive"] }
+k8s-openapi = { version = "0.25.0", features = ["v1_28"] }
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros", "process"] }
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+serde_yaml = "0.9.33"
+anyhow = "1.0.80"
+futures = "0.3.30"
+async-trait = "0.1.77"
+base64 = "0.22.0"
+
+# HTTP Client for the Vault provider.
+reqwest = { version = "0.12.2", features = ["json"] }
+
+# Utility to check if external CLI tools (like sops) exist in the PATH.
+which = "8.0.0"

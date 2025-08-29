@@ -1,0 +1,102 @@
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# File: ph.io_phpreviews.yaml
+#
+# This file defines the Custom Resource Definition (CRD) for the phPreview
+# resource. A CRD extends the Kubernetes API, creating a new, declarative API
+# endpoint that can be managed with standard tools like kubectl.
+#
+# Architecture:
+# - This CRD establishes the 'ph.io' API group and defines a new 'phPreview' kind.
+# - The schema is defined using OpenAPI v3 specifications. This enables server-side
+#   validation, ensuring that any created phPreview object conforms to the
+#   defined structure.
+# - The `spec` field contains the desired state, provided by the user or CI system.
+#   It includes all information needed to create a preview environment, such as the
+#   PR number, repository URL, and commit SHA.
+# - The `status` field is populated and updated by the ph Operator. It reflects
+#   the observed state of the world, providing crucial feedback on the environment's
+#   status (e.g., its URL, whether it's ready, or if an error occurred).
+# - This declarative approach is central to the Kubernetes philosophy and allows for
+#   robust, self-healing automation.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  # The name must follow the format: <plural>.<group>
+  name: phpreviews.ph.io
+spec:
+  # The API group name for this CRD.
+  group: ph.io
+  # Define the scope of the resource. 'Namespaced' means phPreview objects
+  # will exist within a specific Kubernetes namespace.
+  scope: Namespaced
+  names:
+    # Plural name used in the API URL: /apis/<group>/<version>/<plural>
+    plural: phpreviews
+    # Singular name used for aliasing in kubectl.
+    singular: phpreview
+    # The CamelCased name of the resource kind.
+    kind: phPreview
+    # A short, lowercase name for the resource, often used in CLI commands.
+    shortNames:
+      - pgprv
+  versions:
+    - name: v1alpha1
+      # This version is marked as served, meaning it is enabled and available via the API.
+      served: true
+      # This version is marked as the storage version. When multiple versions exist,
+      # this is the one in which objects are stored in etcd.
+      storage: true
+      schema:
+        # OpenAPI v3 schema for validation.
+        openAPIV3Schema:
+          type: object
+          properties:
+            # The 'spec' field defines the desired state of the phPreview.
+            spec:
+              type: object
+              # The 'required' array lists fields that must be present in the spec.
+              required:
+                - prNumber
+                - repoUrl
+                - commitSha
+              properties:
+                prNumber:
+                  type: integer
+                  description: "The number of the pull request this preview is for."
+                repoUrl:
+                  type: string
+                  description: "The URL of the Git repository."
+                commitSha:
+                  type: string
+                  description: "The specific Git commit SHA to be deployed."
+                ttlHours:
+                  type: integer
+                  description: "Time-to-live in hours for the preview environment before automatic teardown."
+                  default: 24
+                manifestPath:
+                  type: string
+                  description: "Path within the repository to the Kubernetes manifests to apply."
+                  default: "./k8s"
+            # The 'status' field is managed by the controller and reflects the current state.
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: "The current phase of the preview environment (e.g., Creating, Ready, Deleting, Error)."
+                url:
+                  type: string
+                  description: "The accessible URL for the preview environment once it is ready."
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: "Timestamp indicating when the environment is scheduled for deletion."
+                message:
+                  type: string
+                  description: "A human-readable message describing the current status or any errors."

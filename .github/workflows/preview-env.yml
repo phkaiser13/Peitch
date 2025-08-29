@@ -1,0 +1,154 @@
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# File: preview-env.yml
+#
+# This GitHub Actions workflow automates the lifecycle of ephemeral preview
+# environments for each pull request. It is the primary entry point for the
+# 'k8s_preview' Rust module.
+#
+# Architecture:
+# - Triggered by pull request events (opening, synchronizing, closing).
+# - Differentiates between setup and teardown actions based on the event type.
+# - Securely handles Kubernetes credentials via repository secrets.
+# - Builds the specific Rust module required for the operation in a sandboxed environment.
+# - Invokes the compiled Rust binary, passing a structured JSON payload with all
+#   necessary context from the pull request event.
+# - Implements a concurrency group to ensure that only the latest workflow run for a
+#   given PR proceeds, canceling any outdated runs. This is critical for efficiency
+#   and preventing race conditions.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+# The name of the workflow, which will be displayed in the GitHub Actions UI.
+name: "🚀 Preview Environment Orchestrator"
+
+# This workflow is triggered by events related to pull requests.
+on:
+  pull_request:
+    # We specify the event types that should trigger the workflow.
+    # 'opened': A new pull request is created.
+    # 'synchronize': A new commit is pushed to the pull request branch.
+    # 'closed': The pull request is closed (either merged or discarded).
+    types: [opened, synchronize, closed]
+
+# Concurrency control is essential to prevent multiple, outdated workflow runs
+# for the same pull request from executing simultaneously. We group runs by the
+# pull request's head reference (e.g., 'refs/pull/123/head') and ensure that
+# any in-progress run is canceled if a new one is triggered for the same group.
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # This job is responsible for creating or updating a preview environment.
+  # It runs only if the pull request was 'opened' or 'synchronize'.
+  setup_preview:
+    name: "🏗️ Setup Preview Environment"
+    # The 'if' condition ensures this job only runs for the intended event types.
+    if: github.event.action == 'opened' || github.event.action == 'synchronize'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Permission to read repository content.
+      pull-requests: write # Permission to write comments back to the PR.
+
+    steps:
+      # Step 1: Checkout the source code
+      # This action checks out the repository's code at the specific commit
+      # associated with the pull request, allowing us to build and test it.
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Rust toolchain
+      # This action installs and configures the Rust compiler and Cargo.
+      # It ensures a consistent build environment.
+      - name: "Install Rust toolchain"
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # Step 3: Build the k8s_preview module
+      # We compile the specific Rust module responsible for Kubernetes interactions.
+      # Building in release mode ensures optimal performance.
+      # The '-p' flag specifies the package name within the Cargo workspace.
+      - name: "Build k8s_preview module"
+        run: cargo build --release -p k8s_preview
+
+      # Step 4: Execute the preview environment creation
+      # This is the core step. It runs the compiled binary and passes a JSON
+      # configuration object via an environment variable. The Rust module will
+      # read this variable to get its instructions.
+      - name: "Run preview environment setup"
+        env:
+          # KUBE_CONFIG_DATA is a base64-encoded Kubernetes config file stored as a
+          # repository secret. This is the secure way to grant cluster access.
+          KUBECONFIG_BASE64: ${{ secrets.KUBE_CONFIG_DATA }}
+          # The JSON payload is constructed dynamically using the GitHub context.
+          # It provides all the necessary information for the Rust module to act.
+          MODULE_CONFIG_JSON: ${{ toJson(
+            {
+            "action": "create",
+            "pr_number": github.event.pull_request.number,
+            "git_repo_url": github.repositoryUrl,
+            "commit_sha": github.event.pull_request.head.sha
+          }
+          )}}
+        run: |
+          # The script first decodes the Kubernetes config from the secret.
+          # It sets the KUBECONFIG environment variable so that Kubernetes clients
+          # (like the one in our Rust module) can find and use it.
+          echo "Decoding Kubeconfig..."
+          KUBECONFIG_FILE=$(mktemp)
+          echo "$KUBECONFIG_BASE64" | base64 --decode > "$KUBECONFIG_FILE"
+          export KUBECONFIG="$KUBECONFIG_FILE"
+          
+          # Execute the compiled Rust binary, which will handle the logic.
+          echo "Executing k8s_preview module..."
+          ./target/release/ph_k8s_preview
+          
+          # Clean up the temporary kubeconfig file.
+          rm "$KUBECONFIG_FILE"
+
+  # This job is responsible for tearing down a preview environment.
+  # It runs only when a pull request is 'closed'.
+  teardown_preview:
+    name: "🧹 Teardown Preview Environment"
+    # The 'if' condition ensures this job only runs when a PR is closed.
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Only needs read access to check out the code.
+
+    steps:
+      # Steps 1 & 2 are identical to the setup job for consistency.
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+
+      - name: "Install Rust toolchain"
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: "Build k8s_preview module"
+        run: cargo build --release -p k8s_preview
+
+      # Step 4: Execute the preview environment teardown.
+      # The logic is similar, but the JSON payload's 'action' is 'destroy'.
+      - name: "Run preview environment teardown"
+        env:
+          KUBECONFIG_BASE64: ${{ secrets.KUBE_CONFIG_DATA }}
+          MODULE_CONFIG_JSON: ${{ toJson(
+            {
+            "action": "destroy",
+            "pr_number": github.event.pull_request.number,
+            "git_repo_url": github.repositoryUrl,
+            "commit_sha": github.event.pull_request.head.sha
+          }
+          )}}
+        run: |
+          echo "Decoding Kubeconfig..."
+          KUBECONFIG_FILE=$(mktemp)
+          echo "$KUBECONFIG_BASE64" | base64 --decode > "$KUBECONFIG_FILE"
+          export KUBECONFIG="$KUBECONFIG_FILE"
+
+          echo "Executing k8s_preview module for teardown..."
+          ./target/release/ph_k8s_preview
+          
+          rm "$KUBECONFIG_FILE"

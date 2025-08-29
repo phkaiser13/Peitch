@@ -1,0 +1,45 @@
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+# Cargo.toml - Rust project manifest for the issue_tracker module.
+#
+# This file configures the Rust build for the `issue_tracker` module. This
+# module is designed to be a highly extensible system for interacting with
+# various issue tracking services like GitHub Issues and Jira.
+#
+# The `[lib]` section with `crate-type = ["cdylib"]` remains crucial for our
+# polyglot architecture, enabling the C core to load this Rust code.
+#
+# Dependencies:
+# - `libc`: For C-FFI type compatibility.
+# - `tokio`: The industry-standard asynchronous runtime for Rust. Essential for
+#   non-blocking network I/O, keeping the application responsive.
+# - `reqwest`: An ergonomic, high-level HTTP client built on top of tokio.
+# - `serde` & `serde_json`: The de-facto standard for zero-cost, safe, and
+#   fast JSON serialization and deserialization in Rust.
+# - `lazy_static`: To safely manage global static data like the core context.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "issue_tracker"
+version = "0.1.0"
+edition = "2021"
+authors = ["Pedro Henrique / phkaiser13 <pedro.garcia@vytruve.org>"]
+description = "A ph module for interacting with issue tracking systems."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+lazy_static = "1.4"
+async-trait = "0.1.77"
+
+# The async runtime
+tokio = { version = "1", features = ["full"] }
+
+# The HTTP client
+reqwest = { version = "0.12.23", features = ["json"] }
+
+# The serialization/deserialization framework
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

@@ -1,0 +1,36 @@
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+# SPDX-License-Identifier: Apache-2.0
+
+include(vcpkg_common_functions)
+
+# Download the source from GitHub
+vcpkg_from_github(
+    OUT_SOURCE_PATH SOURCE_PATH
+    REPO phkaiser13/peitch
+    REF "v@ph_VERSION@"
+    SHA512 "@ph_SHA512@"
+    HEAD_REF main
+)
+
+# Configure the project using CMake
+vcpkg_cmake_configure(
+    SOURCE_PATH "${SOURCE_PATH}"
+    OPTIONS
+        -DBUILD_TESTING=OFF
+)
+
+# Build the project
+vcpkg_cmake_build()
+
+# Install the built artifacts
+vcpkg_cmake_install()
+
+# Move the executable into the tools folder
+file(INSTALL
+    "${CURRENT_PACKAGES_DIR}/bin/ph${VCPKG_HOST_EXECUTABLE_SUFFIX}"
+    DESTINATION "${CURRENT_PACKAGES_DIR}/tools/ph"
+)
+file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/bin" "${CURRENT_PACKAGES_DIR}/debug")
+
+# Install license/copyright
+file(INSTALL "${SOURCE_PATH}/LICENSE" DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}" RENAME copyright)

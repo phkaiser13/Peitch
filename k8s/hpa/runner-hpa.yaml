@@ -1,0 +1,75 @@
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# File: runner-hpa.yaml
+#
+# This manifest defines a HorizontalPodAutoscaler (HPA) to automatically scale
+# the pool of peitch runners. This is a critical component for building a
+# cost-effective and responsive CI/CD platform.
+#
+# Architecture:
+# - It uses the `autoscaling/v2` API, which is essential for scaling based on
+#   custom or external metrics.
+# - The HPA targets the 'ph-runner' Deployment, which is assumed to manage
+#   the runner Pods.
+# - A hybrid scaling strategy is employed for robustness and efficiency:
+#   1. CPU Utilization: A standard resource metric that provides a baseline for
+#      scaling. If runners are under heavy computational load, the system will
+#      scale up regardless of queue length. This prevents existing jobs from
+#      being starved of CPU resources.
+#   2. External Metric (build-queue-length): The primary scaling driver. This
+#      metric is exposed by the Prometheus Adapter. The HPA is configured to
+#      maintain an average of 5 pending jobs per runner. If the queue length
+#      grows to 10, the HPA will scale the runner pool to 2 pods. If it grows
+#      to 50, it will scale to 10 pods, up to the defined maxReplicas. This
+#      ensures that runners are provisioned proactively as demand increases,
+#      minimizing wait times for new jobs.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ph-runner-autoscaler
+  namespace: ph-runners # Runners should operate in a dedicated namespace.
+spec:
+  # The scaleTargetRef points to the workload that this HPA will manage.
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ph-runner
+
+  # Defines the minimum and maximum number of replicas.
+  minReplicas: 2
+  maxReplicas: 20
+
+  # The list of metrics used to determine when to scale. The HPA will scale up
+  # if ANY of these metrics' thresholds are breached. It will only scale down
+  # when ALL metrics are below their target values.
+  metrics:
+    # Metric 1: Standard CPU-based scaling.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Target 80% CPU utilization. If the average CPU across all runner
+          # pods exceeds this, it will trigger a scale-up.
+          averageUtilization: 80
+
+    # Metric 2: Custom external metric for the build queue length.
+    - type: External
+      external:
+        metric:
+          # This name must EXACTLY match the name exposed by the custom metrics server
+          # (e.g., the Prometheus Adapter).
+          name: build-queue-length
+        target:
+          type: AverageValue
+          # The target average value. The HPA will calculate the desired number
+          # of replicas using the formula:
+          # desiredReplicas = ceil[currentReplicas * (currentMetricValue / desiredMetricValue)]
+          # With an averageValue of 5, the HPA tries to maintain one runner for
+          # every 5 jobs in the queue.
+          averageValue: "5"

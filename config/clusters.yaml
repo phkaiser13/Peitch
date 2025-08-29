@@ -1,0 +1,76 @@
+#
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# File: clusters.yaml
+#
+# This configuration file defines the inventory of Kubernetes clusters that the
+# peitch system can target for deployments and other orchestration tasks. It
+# serves as the central registry for the multi-cluster orchestration module.
+#
+# Architecture:
+# - The file is structured as a YAML list, where each item represents a single
+#   Kubernetes cluster.
+# - Each cluster entry contains metadata such as its name, region, and environment,
+#   which allows for programmatic selection and policy application.
+# - Crucially, it abstracts away the sensitive connection details (like CA certs
+#   and auth tokens) by referencing Kubernetes secrets. It is assumed that these
+#   secrets exist within the primary "management" cluster from which peitch
+#   operates. This is a security best practice that avoids storing raw credentials
+#   in version control.
+# - The 'policies' field is designed for future integration with policy-as-code
+#   engines, enabling fine-grained control over what can be deployed to each
+#   cluster.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+# A list of target Kubernetes clusters.
+clusters:
+  # --- Example Production Cluster ---
+  - name: "prod-us-east-1"
+    # The fully qualified URL to the cluster's Kubernetes API server.
+    apiServerUrl: "https://kube-api.prod.us-east-1.my-company.com"
+    # The name of the secret in the management cluster that holds the
+    # Certificate Authority data for this target cluster.
+    # The secret should have a key, e.g., 'ca.crt'.
+    caCertSecret: "prod-us-east-1-ca-cert"
+    # The name of the secret in the management cluster that holds the
+    # bearer token for a service account with appropriate permissions
+    # on the target cluster. The secret should have a key, e.g., 'token'.
+    authTokenSecret: "prod-us-east-1-auth-token"
+    # Geographic region of the cluster. Useful for latency-aware routing and
+    # disaster recovery planning.
+    region: "us-east-1"
+    # Environment tag. Can be 'production', 'staging', 'qa', etc.
+    environment: "production"
+    # A list of policy identifiers that apply to this cluster. This enables
+    # advanced deployment rules (e.g., only allowing signed images,
+    # restricting resource limits).
+    policies:
+      - "high-availability"
+      - "restricted-access"
+      - "pci-compliant"
+
+  # --- Example Staging Cluster ---
+  - name: "staging-eu-central-1"
+    apiServerUrl: "https://kube-api.staging.eu-central-1.my-company.com"
+    caCertSecret: "staging-eu-central-1-ca-cert"
+    authTokenSecret: "staging-eu-central-1-auth-token"
+    region: "eu-central-1"
+    environment: "staging"
+    policies:
+      - "allow-unsigned-images"
+      - "relaxed-resource-quotas"
+
+  # --- Example Development Cluster ---
+  # This entry illustrates a local kind (Kubernetes-in-Docker) cluster.
+  # The orchestration module should be capable of resolving local API server URLs.
+  - name: "local-kind-dev"
+    apiServerUrl: "https://127.0.0.1:6443" # Example local URL
+    # For local dev, credentials might be sourced from the user's default kubeconfig
+    # instead of secrets. The Rust module should handle this logic gracefully.
+    caCertSecret: "" # An empty value could signify using the default kubeconfig context.
+    authTokenSecret: ""
+    region: "local"
+    environment: "development"
+    policies: []

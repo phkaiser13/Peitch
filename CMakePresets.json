@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21
+  },
+  "configurePresets": [
+    {
+      "name": "x64-Release",
+      "displayName": "Visual Studio 17 2022 - x64 Release",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_PREFIX_PATH": "C:/vcpkg/installed/x64-windows/share",
+        "Lua_FOUND": "TRUE",
+        "LUA_INCLUDE_DIR": "C:/vcpkg/installed/x64-windows/include",
+        "LUA_LIBRARY": "C:/vcpkg/installed/x64-windows/lib/lua.lib",
+        "LUA_LIBRARIES": "C:/vcpkg/installed/x64-windows/lib/lua.lib",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ]
+}

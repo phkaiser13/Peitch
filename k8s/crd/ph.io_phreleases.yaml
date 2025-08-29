@@ -1,0 +1,238 @@
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# File: k8s/crd/ph.io_phreleases.yaml
+#
+# This file defines the Custom Resource Definition (CRD) for the phRelease
+# resource. This CRD is the cornerstone of the progressive delivery system,
+# providing a high-level, declarative API for managing complex release
+# strategies like Canary and Blue-Green deployments.
+#
+# Architecture:
+# - It establishes the 'phRelease' kind within the 'ph.io' API group.
+# - The `spec` is designed to be abstract and user-friendly. A user specifies
+#   *what* they want (e.g., a Canary release of version 1.2.0 with automated
+#   metric analysis and promotion) without needing to know the low-level
+#   details of manipulating Deployments, Services, or service mesh resources.
+# - The ph-operator will watch for changes to phRelease resources and translate
+#   this high-level intent into the necessary low-level Kubernetes resource
+#   manipulations.
+# - The `spec` has been extended to include an `analysis` section, allowing
+#   users to define Prometheus queries and success criteria. This enables the
+#   operator to automatically validate the health of a new version before
+#   promoting it or rolling it back.
+# - The `status` field provides a detailed, real-time view of the release's
+#   progress, including the current phase (e.g., Progressing, Promoting, Failed),
+#   the results of metric analyses, and any conditions or errors encountered
+#   during the rollout.
+# - This CRD forms the core of the Release Orchestrator's intelligent and
+#   automated deployment capabilities.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: phreleases.ph.io
+spec:
+  group: ph.io
+  scope: Namespaced
+  names:
+    plural: phreleases
+    singular: phrelease
+    kind: phRelease
+    shortNames:
+      - pgrls
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        # The status subresource is enabled to allow the operator to update
+        # the status without modifying the user's desired state (the spec).
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - appName
+                - version
+                - strategy
+              properties:
+                appName:
+                  type: string
+                  description: "The name of the application being released (e.g., the name of the Kubernetes Deployment)."
+                version:
+                  type: string
+                  description: "The new version tag to be rolled out."
+                strategy:
+                  type: object
+                  required:
+                    - type
+                  properties:
+                    type:
+                      type: string
+                      enum: ["Canary", "BlueGreen"]
+                      description: "The type of release strategy to execute."
+                    canary:
+                      type: object
+                      description: "Configuration for a Canary release. Required if type is 'Canary'."
+                      properties:
+                        trafficPercent:
+                          type: integer
+                          description: "The percentage of traffic to route to the new version."
+                          minimum: 0
+                          maximum: 100
+                        analysis:
+                          type: object
+                          description: "Configures metric analysis for automatic promotion or rollback."
+                          properties:
+                            interval:
+                              type: string
+                              description: "Frequency of metric analysis (e.g., '1m', '5m')."
+                              default: "1m"
+                            threshold:
+                              type: integer
+                              description: "Number of consecutive successes required to promote."
+                              default: 5
+                            maxFailures:
+                              type: integer
+                              description: "Number of failures that trigger a rollback."
+                              default: 2
+                            metrics:
+                              type: array
+                              description: "Metrics to be evaluated."
+                              items:
+                                type: object
+                                required:
+                                  - name
+                                  - query
+                                  - onSuccess
+                                properties:
+                                  name:
+                                    type: string
+                                    description: "Name of the metric."
+                                  query:
+                                    type: string
+                                    description: "Prometheus Query Language (PromQL) query to execute."
+                                  onSuccess:
+                                    type: string
+                                    description: "Condition for success (e.g., 'result < 0.95')."
+                                  predictiveAnalysis:
+                                    type: object
+                                    description: "Configuration for predictive trend analysis."
+                                    properties:
+                                      enabled:
+                                        type: boolean
+                                        default: false
+                                      trendThreshold:
+                                        type: number
+                                        format: double
+                                        description: "The minimum positive slope (rate of increase) that is considered a negative trend."
+                        autoPromote:
+                          type: boolean
+                          description: "Whether to promote automatically after a successful analysis."
+                          default: false
+                    blueGreen:
+                      type: object
+                      description: "Configuration for a Blue-Green release. Required if type is 'BlueGreen'."
+                      properties:
+                        previewUrl:
+                          type: string
+                          description: "An internal URL to access the 'green' deployment before promoting it."
+                        autoPromote:
+                          type: boolean
+                          description: "Whether to automatically promote the 'green' deployment after health checks pass."
+                          default: false
+                security:
+                  type: object
+                  description: "Security-related configurations for the release."
+                  properties:
+                    signatureVerification:
+                      type: object
+                      description: "Enforces Cosign signature verification for the container image."
+                      properties:
+                        publicKeySecretRef:
+                          type: object
+                          description: "Reference to a Kubernetes secret containing the public key for verification."
+                          required:
+                            - name
+                            - key
+                          properties:
+                            name:
+                              type: string
+                              description: "The name of the Secret in the same namespace."
+                            key:
+                              type: string
+                              description: "The key within the Secret's data that contains the PEM-encoded public key."
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: ["Progressing", "Paused", "Succeeded", "Failed", "Promoting", "RollingBack"]
+                  description: "The current phase of the release."
+                currentStep:
+                  type: integer
+                  description: "The index of the current step in a progressive rollout."
+                analysisRun:
+                  type: object
+                  description: "Status of the latest metric analysis run."
+                  properties:
+                    successCount:
+                      type: integer
+                      description: "Number of consecutive successful checks."
+                    failureCount:
+                      type: integer
+                      description: "Number of consecutive failed checks."
+                    lastCheck:
+                      type: string
+                      format: date-time
+                      description: "Timestamp of the last metric check."
+                    metricHistory:
+                      type: array
+                      description: "Historical data for metrics to enable trend analysis."
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                            description: "Name of the metric."
+                          values:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                timestamp:
+                                  type: string
+                                  format: date-time
+                                value:
+                                  type: number
+                                  format: double
+                stableVersion:
+                  type: string
+                  description: "The version currently considered stable and receiving the majority of traffic."
+                canaryVersion:
+                  type: string
+                  description: "The new version being tested as part of a canary release."
+                trafficSplit:
+                  type: string
+                  description: "A human-readable representation of the current traffic distribution (e.g., 'stable: 90%, canary: 10%')."
+                conditions:
+                  type: array
+                  description: "A list of conditions observing the state of the release, following Kubernetes conventions."
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastUpdateTime:
+                        type: string
+                        format: date-time
+                      message:
+                        type: string

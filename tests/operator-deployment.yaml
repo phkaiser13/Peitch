@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ph-operator-controller-manager
+  namespace: ph-operator-system
+  labels:
+    app: ph-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ph-operator
+  template:
+    metadata:
+      labels:
+        app: ph-operator
+    spec:
+      serviceAccountName: ph-operator-controller-manager
+      containers:
+      - name: manager
+        image: ph-operator:test
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/local/bin/ph-operator
+        env:
+        - name: PROMETHEUS_ENDPOINT
+          value: "http://prometheus.test.svc:9090" # Dummy endpoint for tests
+        - name: RUST_LOG
+          value: "info,kube=warn,tower=warn"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi

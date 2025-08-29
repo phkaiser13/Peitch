@@ -1,0 +1,13 @@
+ph (@ph_VERSION@-1) unstable; urgency=medium
+
+  * New upstream release @ph_VERSION@
+  * Updated dependencies and build requirements
+  * Improved performance and stability
+
+ -- Pedro Henrique / phkaiser13 <you@example.com>  @ph_RELEASE_DATE@
+
+ph (1.0.0-1) unstable; urgency=low
+
+  * Initial Release.
+
+ -- Pedro Henrique / phkaiser13 <you@example.com>  Mon, 01 Jan 2025 10:00:00 +0000

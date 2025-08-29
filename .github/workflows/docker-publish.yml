@@ -1,0 +1,120 @@
+# =================================================================================================
+# GitHub Actions Workflow: Build, Test, and Publish Docker Image
+#
+# This workflow defines a complete CI/CD pipeline for the peitch application.
+# It automates the process of building the Docker image, running tests (placeholder),
+# tagging it intelligently, and publishing it to a container registry.
+# =================================================================================================
+
+# The name of the workflow, which will be displayed in the "Actions" tab of your GitHub repository.
+name: Docker CI/CD - Build and Publish
+
+# -------------------------------------------------------------------------------------------------
+# Triggers
+#
+# This section defines when the workflow will be automatically executed.
+# -------------------------------------------------------------------------------------------------
+on:
+  # Run the workflow on every push to the 'main' branch.
+  push:
+    branches:
+      - 'main'
+    # Also run on pushes of version tags (e.g., v1.0.0, v2.3.4).
+    tags:
+      - 'v*.*.*'
+  # Run the workflow on any pull request that targets the 'main' branch.
+  # This is crucial for verifying changes before they are merged.
+  pull_request:
+    branches:
+      - 'main'
+
+# -------------------------------------------------------------------------------------------------
+# Jobs
+#
+# A workflow run is made up of one or more jobs, which run in parallel by default.
+# -------------------------------------------------------------------------------------------------
+jobs:
+  build-and-push-image:
+    # The name of the job, which will be displayed on GitHub.
+    name: Build, Test & Push Docker Image
+
+    # The type of runner that the job will run on. 'ubuntu-latest' is a good general-purpose choice.
+    runs-on: ubuntu-latest
+
+    # ---------------------------------------------------------------------------------------------
+    # Steps
+    #
+    # A job contains a sequence of tasks called steps. Steps can run commands or use pre-built actions.
+    # ---------------------------------------------------------------------------------------------
+    steps:
+      # Step 1: Check out the repository's code
+      # This action checks-out your repository under $GITHUB_WORKSPACE, so your job can access it.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Docker Buildx
+      # This action provides a better builder with features like multi-platform builds and improved caching.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+            driver: docker # use the default docker driver
+
+      # Step 3: Log in to a container registry
+      # This step securely logs into your chosen container registry (e.g., Docker Hub, GitHub Container Registry).
+      # It uses secrets to avoid hardcoding credentials in the workflow file.
+      # IMPORTANT: This step is skipped for pull requests for security reasons.
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Step 4: Extract Docker metadata (tags and labels)
+      # This is a very powerful action that automatically creates smart tags for your image based on the Git event.
+      # For example:
+      # - Push to main -> gets tag 'latest'
+      # - Push tag v1.2.3 -> gets tag '1.2.3' and 'latest'
+      # - Every build -> gets a tag with the git SHA
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: your-dockerhub-username/peitch # <-- IMPORTANT: Change this to your registry/image name
+          tags: |
+            # SemVer tags
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # Git branch
+            type=ref,event=branch
+            # Git tag
+            type=ref,event=tag
+            # Git SHA
+            type=sha
+            # Static tag 'latest' on default branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # [OPTIONAL] Step 5: Run Tests
+      # This is a placeholder for your testing suite. You should run your unit and integration
+      # tests here before building the final image to ensure code quality.
+      # Example: Run tests using a command inside the builder container.
+      # - name: Run Unit Tests
+      #   run: |
+      #     docker build --target builder -t peitch-builder .
+      #     docker run --rm peitch-builder make test
+
+      # Step 6: Build and push the Docker image
+      # This is the main step. It uses the Dockerfile from your repo and the metadata from the previous step.
+      # It builds the image and, if not a pull request, pushes it to the registry.
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          # Only push the image if the event is a push (to main or a tag), not on a pull request.
+          push: ${{ github.event_name != 'pull_request' }}
+          # Use the tags and labels generated by the 'meta' step.
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Enable caching to speed up subsequent builds significantly.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
