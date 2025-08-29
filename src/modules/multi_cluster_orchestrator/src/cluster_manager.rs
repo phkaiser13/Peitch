@@ -19,6 +19,7 @@
 // Import the new strategies module
 use crate::strategies;
 use anyhow::{anyhow, Context, Result};
+use policy_engine::validate_manifests;
 use futures::future::join_all;
 use k8s_openapi::api::{
     apps::v1::{DaemonSet, Deployment, StatefulSet},
@@ -30,6 +31,7 @@ use kube::{
     discovery, Client, Config, Resource,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 // Minimal definition for a CRD from another module to avoid dependency.
 #[derive(Deserialize, Debug, Clone)]
@@ -99,6 +101,8 @@ pub struct Cluster {
     pub health_probes: Vec<HealthProbe>,
     #[serde(default)]
     pub stage: Option<u32>,
+    #[serde(default)]
+    pub policies: BTreeMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -117,6 +121,7 @@ pub enum StrategyType {
     Staged,
     Failover,
     Parallel,
+    BlueGreen,
 }
 
 /// Encapsulates the deployment strategy configuration.
@@ -126,13 +131,46 @@ pub struct Strategy {
     pub strategy_type: StrategyType,
 }
 
-/// Defines an action to be performed across clusters.
+// New struct to define a stage in an execution plan.
+#[derive(Debug, Clone)]
+pub struct ExecutionStage {
+    pub targets: Vec<ClusterTarget>,
+    pub action: ActionDetails,
+}
+
+// New enum to describe the specific action to perform in a stage.
+// This allows a strategy to create a plan with different kinds of steps.
+#[derive(Debug, Clone)]
+pub enum ActionDetails {
+    Apply {
+        manifests: String,
+        // Using a BTreeMap for deterministic ordering, which can be useful for testing.
+        variables: BTreeMap<String, String>,
+    },
+    SwitchTraffic {
+        service_name: String,
+        new_target_color: String,
+    },
+    DeleteResources {
+        app_name: String,
+        color_label: String,
+    },
+    HealthCheck {
+        app_name: String,
+        namespace: String,
+        color: String,
+    },
+}
+
+/// Defines an action to be performed across clusters, as specified by the FFI caller.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
     /// Apply a set of Kubernetes manifests using a specific strategy.
     Apply {
         manifests: String,
+        app_name: String, // The logical name of the application being deployed.
+        namespace: String, // The namespace the application is deployed in.
         strategy: Strategy,
     },
 }
@@ -203,111 +241,119 @@ impl ClusterManager {
         Ok(Self { clients })
     }
 
-    /// Executes a given apply action across a list of target clusters according to a strategy.
-    ///
-    /// This function orchestrates the entire deployment flow:
-    /// 1. It gets the appropriate strategy planner.
-    /// 2. It generates an execution plan (a series of stages).
-    /// 3. It iterates through each stage sequentially.
-    /// 4. Within each stage, it runs operations on all clusters concurrently.
-    /// 5. After each stage, it evaluates the results and decides whether to proceed,
-    ///    halt on failure (Staged), or halt on success (Failover).
     pub async fn execute_action(
         &self,
         targets: &[Cluster],
-        manifests: &str,
-        strategy: &Strategy,
+        action: &Action,
     ) -> Result<Vec<ClusterResult>> {
-        // 1. Get the correct strategy planner from the factory.
+        let (manifests, app_name, namespace, strategy) = match action {
+            Action::Apply {
+                manifests,
+                app_name,
+                namespace,
+                strategy,
+            } => (manifests, app_name, namespace, strategy),
+        };
+
         let planner = strategies::get_strategy(&strategy.strategy_type);
-
-        // 2. Generate the execution plan. This can fail if the input is invalid.
-        let execution_plan = planner.plan_execution(targets)?;
+        let execution_plan = planner.plan_execution(targets, manifests, app_name, namespace)?;
         let total_stages = execution_plan.len();
-
         let mut all_results: Vec<ClusterResult> = Vec::new();
-        let manifests_arc = Arc::new(manifests.to_string());
 
-        // 3. Iterate over each stage in the plan sequentially.
         for (i, stage) in execution_plan.into_iter().enumerate() {
-            if stage.is_empty() {
-                continue;
-            }
             println!("\n--- Executing Stage {}/{} ---", i + 1, total_stages);
 
-            // 4. Execute operations for all clusters within the current stage concurrently.
-            let task_handles = stage.iter().map(|target| {
-                let client = match self.clients.get(&target.name) {
-                    Some(c) => c.clone(),
-                    None => {
-                        return tokio::spawn(async move {
-                            ClusterResult {
-                                cluster_name: target.name.clone(),
-                                outcome: Err(format!("Config for cluster '{}' not found.", target.name)),
-                            }
-                        });
-                    }
-                };
-                let cluster_name = target.name.clone();
-                let manifests_clone = Arc::clone(&manifests_arc);
-
-                tokio::spawn(async move {
-                    let outcome = Self::execute_apply(client, &manifests_clone)
-                        .await
-                        .map_err(|e| format!("{:#}", e));
-                    ClusterResult {
-                        cluster_name,
-                        outcome,
-                    }
-                })
-            }).collect::<Vec<_>>();
-
-            let mut stage_results: Vec<ClusterResult> = join_all(task_handles)
-                .await
-                .into_iter()
-                .map(|res| res.expect("Tokio task panicked!"))
+            // Get the full Cluster objects for the targets in this stage
+            let clusters_in_stage: Vec<Cluster> = targets
+                .iter()
+                .filter(|c| stage.targets.iter().any(|st| st.name == c.name))
+                .cloned()
                 .collect();
-            
-            // --- Health Check for Staged Deployments ---
-            if strategy.strategy_type == StrategyType::Staged {
-                let health_check_futures = stage_results.iter_mut().zip(stage.iter()).map(|(result, cluster_in_stage)| async move {
-                    if let Ok(applied_resources) = &result.outcome {
-                        let client = self.clients.get(&result.cluster_name).unwrap();
-                        
-                        if let Err(e) = self.wait_for_stage_health(client, applied_resources, &result.cluster_name, &cluster_in_stage.health_probes).await {
-                            result.outcome = Err(format!("Health check failed: {:#}", e));
-                        }
-                    }
-                });
-                join_all(health_check_futures).await;
-            }
+
+            let stage_results = self.execute_stage(stage, &clusters_in_stage).await;
 
             let stage_had_failures = stage_results.iter().any(|r| r.outcome.is_err());
             let stage_had_successes = stage_results.iter().any(|r| r.outcome.is_ok());
-
             all_results.extend(stage_results);
 
-            // 5. Apply strategy-specific logic based on the stage outcome.
-            match strategy.strategy_type {
-                StrategyType::Staged if stage_had_failures => {
-                    eprintln!("Error: Stage {} failed. Halting staged deployment.", i + 1);
-                    break; // Stop processing further stages.
-                }
-                StrategyType::Failover if stage_had_successes => {
-                    println!("Success: Deployed to a cluster. Halting failover process.");
-                    break; // Stop on the first successful deployment.
-                }
-                // For Direct/Parallel, we continue (as there's only one stage).
-                // For Staged on success, we continue to the next stage.
-                // For Failover on failure, we continue to the next cluster.
-                // For Direct, we continue (as there's only one stage).
-                // For Staged on success, we continue to the next stage.
-                // For Failover on failure, we continue to the next cluster.
-                _ => (),
+            if stage_had_failures && strategy.strategy_type == StrategyType::Staged {
+                eprintln!("Error: Stage {} failed. Halting staged deployment.", i + 1);
+                break;
+            }
+            if stage_had_successes && strategy.strategy_type == StrategyType::Failover {
+                println!("Success: Deployed to a cluster. Halting failover process.");
+                break;
             }
         }
 
         Ok(all_results)
+    }
+
+    /// Executes a single stage of the plan concurrently across all its target clusters.
+    async fn execute_stage(&self, stage: ExecutionStage, clusters_in_stage: &[Cluster]) -> Vec<ClusterResult> {
+        let task_handles = clusters_in_stage.iter().map(|target_cluster| {
+            let client = self.clients.get(&target_cluster.name).unwrap().clone();
+            let action_clone = stage.action.clone();
+            let target_cluster_clone = target_cluster.clone(); // Clone for async block
+
+            tokio::spawn(async move {
+                let outcome = match action_clone {
+                    ActionDetails::Apply {
+                        manifests,
+                        variables,
+                    } => {
+                        if !target_cluster_clone.policies.is_empty() {
+                            println!("[{}] Enforcing policies...", target_cluster_clone.name);
+                            let policy_string = serde_yaml::to_string(&target_cluster_clone.policies).unwrap_or_default();
+                            if let Err(e) = validate_manifests(&manifests, &policy_string).await {
+                                return Err(anyhow!("Policy validation failed: {:#}", e));
+                            }
+                            println!("[{}] Policy validation passed.", target_cluster_clone.name);
+                        }
+                        Self::execute_apply(client, &manifests, &variables).await
+                    }
+                    ActionDetails::SwitchTraffic {
+                        service_name,
+                        new_target_color,
+                    } => {
+                        Self::execute_switch_traffic(client, &target_cluster_clone.name, &service_name, &new_target_color).await
+                    }
+                    ActionDetails::DeleteResources {
+                        app_name,
+                        color_label,
+                    } => {
+                        Self::execute_delete_resources(client, &target_cluster_clone.name, &app_name, &color_label).await
+                    }
+                    ActionDetails::HealthCheck {
+                        app_name,
+                        namespace,
+                        color,
+                    } => {
+                        let resources_to_check = Self::find_health_checkable_resources(&client, &app_name, &namespace, &color).await?;
+                        Self::wait_for_stage_health(
+                            &client,
+                            &resources_to_check,
+                            &target_cluster_clone.name,
+                            &target_cluster_clone.health_probes,
+                        )
+                        .await
+                        .map(|_| resources_to_check)
+                    }
+                }
+                .map_err(|e| format!("{:#}", e));
+
+                ClusterResult {
+                    cluster_name: target_cluster_clone.name,
+                    outcome,
+                }
+            })
+        }).collect::<Vec<_>>();
+
+        join_all(task_handles)
+            .await
+            .into_iter()
+            .map(|res| res.expect("Tokio task panicked!"))
+            .collect()
     }
 
     /// Waits for all applied resources in a stage to become healthy.
@@ -424,11 +470,22 @@ impl ClusterManager {
     }
 
     /// Private helper to apply manifests to a single cluster.
-    async fn execute_apply(client: Client, manifests: &str) -> Result<Vec<AppliedResource>> {
+    async fn execute_apply(
+        client: Client,
+        manifests: &str,
+        variables: &BTreeMap<String, String>,
+    ) -> Result<Vec<AppliedResource>> {
         let ssapply = PatchParams::apply("ph.multi_cluster_orchestrator");
         let mut applied_resources = Vec::new();
 
-        for doc in serde_yaml::Deserializer::from_str(manifests) {
+        // Simple string replacement for templating
+        let mut templated_manifests = manifests.to_string();
+        for (key, value) in variables {
+            let placeholder = format!("{{{{ .{} }}}}", key);
+            templated_manifests = templated_manifests.replace(&placeholder, value);
+        }
+
+        for doc in serde_yaml::Deserializer::from_str(&templated_manifests) {
             let obj: DynamicObject = serde::Deserialize::deserialize(doc)
                 .context("Failed to deserialize YAML manifest into a Kubernetes object")?;
 
@@ -532,6 +589,83 @@ impl ClusterManager {
         println!("✅ Successfully updated policy for cluster '{}'.", cluster_name);
 
         Ok(())
+    }
+
+    /// Finds all health-checkable resources for a given app and color.
+    async fn find_health_checkable_resources(
+        client: &Client,
+        app_name: &str,
+        namespace: &str,
+        color: &str,
+    ) -> Result<Vec<AppliedResource>> {
+        let mut resources = Vec::new();
+        let label_selector = format!("app.kubernetes.io/name={},app.kubernetes.io/color={}", app_name, color);
+        let lp = kube::api::ListParams::default().labels(&label_selector);
+
+        // Find Deployments
+        let dep_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+        if let Ok(deps) = dep_api.list(&lp).await {
+            for dep in deps {
+                resources.push(AppliedResource {
+                    gvk: Deployment::gvk(&()),
+                    name: dep.name_any(),
+                    namespace: dep.namespace(),
+                });
+            }
+        }
+        
+        // TODO: Add search for StatefulSets and DaemonSets here as well.
+
+        Ok(resources)
+    }
+
+    /// Switches a service to point to a new color (blue/green).
+    async fn execute_switch_traffic(
+        client: Client,
+        cluster_name: &str,
+        service_name: &str,
+        new_color: &str,
+    ) -> Result<Vec<AppliedResource>> {
+        println!(
+            "[{}] Switching traffic for service '{}' to color '{}'",
+            cluster_name, service_name, new_color
+        );
+        let service_api: Api<k8s_openapi::api::core::v1::Service> = Api::default_namespaced(client);
+
+        let patch = json!({
+            "spec": {
+                "selector": {
+                    "app.kubernetes.io/color": new_color
+                }
+            }
+        });
+
+        service_api
+            .patch(service_name, &PatchParams::apply("ph-b/g-manager"), &Patch::Merge(&patch))
+            .await?;
+
+        println!("[{}] Successfully switched traffic for service '{}'", cluster_name, service_name);
+        Ok(vec![])
+    }
+
+    /// Deletes resources with a specific color label.
+    async fn execute_delete_resources(
+        client: Client,
+        cluster_name: &str,
+        app_name: &str,
+        color: &str,
+    ) -> Result<Vec<AppliedResource>> {
+        println!(
+            "[{}] Deleting '{}' resources for app '{}'",
+            color, cluster_name, app_name
+        );
+        let dep_api: Api<Deployment> = Api::default_namespaced(client);
+        let lp = kube::api::ListParams::default().labels(&format!("app.kubernetes.io/name={},app.kubernetes.io/color={}", app_name, color));
+
+        dep_api.delete_collection(&Default::default(), &lp).await?;
+
+        println!("[{}] Successfully deleted '{}' resources for app '{}'", color, cluster_name, app_name);
+        Ok(vec![])
     }
 }
 

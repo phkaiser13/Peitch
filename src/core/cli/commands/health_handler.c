@@ -33,55 +33,12 @@
 
 // --- Foreign Function Interface (FFI) Declaration ---
 
-/**
- * @brief External function exported by the Rust 'k8s_health' module.
- *
- * This is the entry point into the Rust logic for all health and auto-heal
- * operations. It accepts a JSON payload defining the action and its parameters.
- *
- * @param config_json A null-terminated UTF-8 string containing the JSON
- *                    configuration for the health management operation.
- * @return An integer exit code. 0 indicates success; non-zero indicates failure.
- */
 extern int run_health_manager(const char* config_json);
+extern int run_autoheal_manager(const char* config_json);
 
 
 // --- Private Helper Functions ---
 
-/**
- * @brief Executes `kubectl apply -f -` and pipes the provided YAML to its stdin.
- * @param yaml_manifest The null-terminated string containing the YAML to apply.
- * @return phStatus indicating the outcome of the kubectl command.
- */
-static phStatus apply_yaml_via_kubectl(const char* yaml_manifest) {
-    logger_log(LOG_LEVEL_INFO, "HealthHandler", "Attempting to apply generated YAML via kubectl.");
-    // "w" opens the command's stdin for writing.
-    FILE* pipe = popen("kubectl apply -f -", "w");
-    if (!pipe) {
-        logger_log(LOG_LEVEL_ERROR, "HealthHandler", "Failed to open pipe to kubectl. Is kubectl in your PATH?");
-        tui_print_error("Failed to execute kubectl. Please ensure it is installed and in your PATH.");
-        return ph_ERROR_EXEC_FAILED;
-    }
-
-    // Write the YAML manifest to the command's stdin.
-    if (fprintf(pipe, "%s", yaml_manifest) < 0) {
-        pclose(pipe);
-        logger_log(LOG_LEVEL_ERROR, "HealthHandler", "Failed to write YAML to kubectl pipe.");
-        tui_print_error("An I/O error occurred while communicating with kubectl.");
-        return ph_ERROR_IO;
-    }
-
-    // pclose waits for the command to terminate and returns its exit status.
-    int status = pclose(pipe);
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        logger_log(LOG_LEVEL_INFO, "HealthHandler", "kubectl apply completed successfully.");
-        return ph_SUCCESS;
-    } else {
-        logger_log_fmt(LOG_LEVEL_ERROR, "HealthHandler", "kubectl apply failed with exit status: %d", WEXITSTATUS(status));
-        tui_print_error("kubectl apply command failed. Please check kubectl logs or permissions.");
-        return ph_ERROR_EXEC_FAILED;
-    }
-}
 
 /**
  * @brief Handles the 'health check' subcommand.
@@ -161,50 +118,28 @@ static phStatus handle_autoheal_enable_subcommand(int argc, const char** argv) {
         return ph_ERROR_INVALID_ARGS;
     }
 
-    char yaml_buffer[2048];
-    // NOTE: The trigger name should be a valid Kubernetes resource name (DNS-1123).
-    // The user is responsible for providing a sanitized name.
-    const char* yaml_format =
-        "apiVersion: ph.kaiser.io/v1alpha1\n"
-        "kind: phAutoHealRule\n"
-        "metadata:\n"
-        "  # The resource name is derived from the trigger for uniqueness.\n"
-        "  name: autoheal-rule-%s\n"
-        "  # Assumes the ph-operator is configured to watch this namespace.\n"
-        "  namespace: ph-operator\n"
-        "spec:\n"
-        "  # The name of the alert/trigger that activates this rule.\n"
-        "  triggerName: \"%s\"\n"
-        "  # The cooldown period to prevent the rule from firing too frequently.\n"
-        "  cooldown: \"%s\"\n"
-        "  # The list of actions to execute when the rule is triggered.\n"
-        "  actions:\n"
-        "    - runbook:\n"
-        "        scriptName: \"%s\"\n";
+    // The C code passes the raw 'actions' string. The complex parsing logic
+    // is delegated to the safer Rust layer.
+    char json_buffer[2048];
+    snprintf(json_buffer, sizeof(json_buffer),
+             "{"
+             "\"triggerName\":\"%s\","
+             "\"cooldown\":\"%s\","
+             "\"namespace\":\"ph-operator\","
+             "\"actionsStr\":\"%s\""
+             "}",
+             on_trigger, cooldown, actions);
 
-    // Generate the YAML manifest string from the parsed arguments.
-    int written = snprintf(yaml_buffer, sizeof(yaml_buffer), yaml_format,
-                           on_trigger, // Used for metadata.name
-                           on_trigger, // Used for spec.triggerName
-                           cooldown,   // Used for spec.cooldown
-                           actions);   // Used for spec.actions.runbook.scriptName
+    logger_log_fmt(LOG_LEVEL_DEBUG, "HealthHandler", "Calling Rust FFI with JSON payload: %s", json_buffer);
+    int rust_exit_code = run_autoheal_manager(json_buffer);
 
-    if (written < 0 || (size_t)written >= sizeof(yaml_buffer)) {
-        logger_log(LOG_LEVEL_ERROR, "HealthHandler", "Buffer too small to generate phAutoHealRule YAML.");
-        tui_print_error("Internal error: could not generate auto-heal configuration.");
-        return ph_ERROR_BUFFER_TOO_SMALL;
-    }
-
-    logger_log_fmt(LOG_LEVEL_DEBUG, "HealthHandler", "Generated phAutoHealRule YAML:\n%s", yaml_buffer);
-
-    // Apply the generated manifest to the cluster.
-    phStatus status = apply_yaml_via_kubectl(yaml_buffer);
-    if (status == ph_SUCCESS) {
-        tui_print_success("Auto-heal rule configured successfully in the cluster.");
+    if (rust_exit_code == 0) {
+        tui_print_success("Auto-heal rule configured successfully.");
+        return ph_SUCCESS;
     } else {
-        tui_print_error("Failed to configure auto-heal rule.");
+        tui_print_error("Failed to configure auto-heal rule. Check logs for details.");
+        return ph_ERROR_EXEC_FAILED;
     }
-    return status;
 }
 
 // --- Public Function Implementation ---

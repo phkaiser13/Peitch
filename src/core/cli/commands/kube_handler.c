@@ -643,14 +643,16 @@ static phStatus handle_multi_command(int argc, const char** argv) {
         return ph_ERROR_INVALID_ARGS;
     }
 
-    const char* clusters_str = NULL, *path = NULL, *strategy = NULL;
+    const char* clusters_str = NULL, *path = NULL, *strategy = NULL, *app_name = NULL, *namespace = "default";
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--clusters") == 0 && i + 1 < argc) clusters_str = argv[++i];
         else if (strcmp(argv[i], "--path") == 0 && i + 1 < argc) path = argv[++i];
         else if (strcmp(argv[i], "--strategy") == 0 && i + 1 < argc) strategy = argv[++i];
+        else if (strcmp(argv[i], "--app-name") == 0 && i + 1 < argc) app_name = argv[++i];
+        else if (strcmp(argv[i], "--namespace") == 0 && i + 1 < argc) namespace = argv[++i];
     }
-    if (!clusters_str || !path) {
-        tui_print_error("--clusters and --path are required for multi apply.");
+    if (!clusters_str || !path || !app_name) {
+        tui_print_error("--clusters, --path, and --app-name are required for multi apply.");
         return ph_ERROR_INVALID_ARGS;
     }
 
@@ -690,13 +692,8 @@ static phStatus handle_multi_command(int argc, const char** argv) {
         ptr += snprintf(ptr, end - ptr, "{\"name\":\"%s\"}%s",
                         cluster_names[i], (i == cluster_count - 1) ? "" : ",");
     }
-    ptr += snprintf(ptr, end - ptr, "],\"action\":{\"type\":\"%s\",\"manifests\":\"%s\"", action, escaped_manifest);
-
-    if (strategy) {
-        ptr += snprintf(ptr, end - ptr, ",\"strategy\":\"%s\"", strategy);
-    }
-
-    ptr += snprintf(ptr, end - ptr, "}}");
+    ptr += snprintf(ptr, end - ptr, "],\"action\":{\"type\":\"apply\",\"manifests\":\"%s\",\"app_name\":\"%s\",\"namespace\":\"%s\",\"strategy\":{\"type\":\"%s\"}}}",
+                    escaped_manifest, app_name, namespace, strategy ? strategy : "direct");
 
 
     logger_log_fmt(LOG_LEVEL_DEBUG, "KubeHandler", "Calling 'multi_cluster_orchestrator' with payload: %s", json_buffer);

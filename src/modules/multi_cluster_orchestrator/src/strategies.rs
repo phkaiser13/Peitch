@@ -23,25 +23,30 @@ use crate::cluster_manager::{Cluster, StrategyType};
 use anyhow::Result;
 use std::collections::BTreeMap;
 
+use crate::cluster_manager::{ActionDetails, ClusterTarget, ExecutionStage};
+
 /// A trait representing a deployment strategy.
 ///
 /// A strategy's primary role is to determine the order and grouping of cluster
-/// operations. It transforms a flat list of targets into a structured execution
-/// plan, which is a vector of stages. Each stage is a vector of targets that
-/// should be processed concurrently.
+/// operations. It transforms a high-level intent into a detailed, multi-stage
+/// execution plan.
 pub trait DeploymentStrategy {
     /// Generates an execution plan based on the strategy's rules.
     ///
     /// # Arguments
-    /// * `targets` - A slice of `ClusterTarget` representing all clusters selected
-    ///   for the operation.
+    /// * `targets` - A slice of `Cluster` representing all clusters selected for the operation.
+    /// * `manifests` - The raw string of Kubernetes manifests to be applied.
+    /// * `app_name` - The logical name of the application.
     ///
     /// # Returns
-    /// A `Result` containing a `Vec<Vec<ClusterTarget>>`.
-    /// - The outer `Vec` represents the sequence of stages.
-    /// - The inner `Vec` represents the set of clusters to be deployed to
-    ///   concurrently within a single stage.
-    fn plan_execution(&self, targets: &[ClusterTarget]) -> Result<Vec<Vec<ClusterTarget>>>;
+    /// A `Result` containing a `Vec<ExecutionStage>`, which is the step-by-step plan.
+    fn plan_execution(
+        &self,
+        targets: &[Cluster],
+        manifests: &str,
+        app_name: &str,
+        namespace: &str,
+    ) -> Result<Vec<ExecutionStage>>;
 }
 
 // --- Strategy Implementations ---
@@ -53,12 +58,26 @@ pub trait DeploymentStrategy {
 pub struct DirectStrategy;
 
 impl DeploymentStrategy for DirectStrategy {
-    fn plan_execution(&self, targets: &[ClusterTarget]) -> Result<Vec<Vec<ClusterTarget>>> {
+    fn plan_execution(
+        &self,
+        targets: &[Cluster],
+        manifests: &str,
+        _app_name: &str,
+        _namespace: &str,
+    ) -> Result<Vec<ExecutionStage>> {
         if targets.is_empty() {
             return Ok(vec![]);
         }
-        // All targets are placed in a single stage for concurrent execution.
-        let plan = vec![targets.to_vec()];
+        let plan = vec![ExecutionStage {
+            targets: targets
+                .iter()
+                .map(|c| ClusterTarget { name: c.name.clone() })
+                .collect(),
+            action: ActionDetails::Apply {
+                manifests: manifests.to_string(),
+                variables: BTreeMap::new(),
+            },
+        }];
         Ok(plan)
     }
 }
@@ -71,18 +90,17 @@ impl DeploymentStrategy for DirectStrategy {
 pub struct ParallelStrategy;
 
 impl DeploymentStrategy for ParallelStrategy {
-    fn plan_execution(&self, targets: &[ClusterTarget]) -> Result<Vec<Vec<ClusterTarget>>> {
-        if targets.is_empty() {
-            return Ok(vec![]);
-        }
-        // All targets are placed in a single stage for concurrent execution.
-        let plan = vec![targets.to_vec()];
-        Ok(plan)
+    fn plan_execution(
+        &self,
+        targets: &[Cluster],
+        manifests: &str,
+        app_name: &str,
+        namespace: &str,
+    ) -> Result<Vec<ExecutionStage>> {
+        // Functionally identical to Direct for this implementation.
+        DirectStrategy.plan_execution(targets, manifests, app_name, namespace)
     }
 }
-
-
-use std::collections::BTreeMap;
 
 /// # Staged Strategy
 ///
@@ -91,18 +109,33 @@ use std::collections::BTreeMap;
 pub struct StagedStrategy;
 
 impl DeploymentStrategy for StagedStrategy {
-    fn plan_execution(&self, targets: &[ClusterTarget]) -> Result<Vec<Vec<ClusterTarget>>> {
+    fn plan_execution(
+        &self,
+        targets: &[Cluster],
+        manifests: &str,
+        _app_name: &str,
+        _namespace: &str,
+    ) -> Result<Vec<ExecutionStage>> {
         let mut stages: BTreeMap<u32, Vec<ClusterTarget>> = BTreeMap::new();
 
         for target in targets {
-            // Use the target's stage number, or a default high number if not specified.
             let stage_num = target.stage.unwrap_or(u32::MAX);
-            stages.entry(stage_num).or_default().push(target.clone());
+            stages
+                .entry(stage_num)
+                .or_default()
+                .push(ClusterTarget { name: target.name.clone() });
         }
 
-        // The BTreeMap automatically keeps the stages sorted by key (stage number).
-        // We just need to collect the values (the groups of clusters).
-        let plan: Vec<Vec<ClusterTarget>> = stages.into_values().collect();
+        let plan: Vec<ExecutionStage> = stages
+            .into_values()
+            .map(|cluster_targets| ExecutionStage {
+                targets: cluster_targets,
+                action: ActionDetails::Apply {
+                    manifests: manifests.to_string(),
+                    variables: BTreeMap::new(),
+                },
+            })
+            .collect();
 
         Ok(plan)
     }
@@ -110,28 +143,103 @@ impl DeploymentStrategy for StagedStrategy {
 
 /// # Failover Strategy
 ///
-/// Plans the execution on one cluster at a time, in a deterministic order,
-/// similar to the Staged strategy. The key difference is in how the executor
-/// (`ClusterManager`) handles this plan: it will stop execution after the
-/// first successful deployment. This planner's job is simply to provide the
-/// ordered sequence of single-cluster stages.
+/// Plans the execution on one cluster at a time, in a deterministic order.
+/// The executor will stop after the first successful deployment.
 pub struct FailoverStrategy;
 
 impl DeploymentStrategy for FailoverStrategy {
-    fn plan_execution(&self, targets: &[ClusterTarget]) -> Result<Vec<Vec<ClusterTarget>>> {
-        // A predictable order is crucial for a failover strategy. We sort by name
-        // to define the primary, secondary, etc., clusters.
+    fn plan_execution(
+        &self,
+        targets: &[Cluster],
+        manifests: &str,
+        _app_name: &str,
+        _namespace: &str,
+    ) -> Result<Vec<ExecutionStage>> {
         let mut sorted_targets = targets.to_vec();
         sorted_targets.sort_by(|a, b| a.name.cmp(&b.name));
 
-        // The plan is identical to 'Staged': one cluster per stage. The executor
-        // will provide the failover logic by halting the plan on success.
-        let plan: Vec<Vec<ClusterTarget>> = sorted_targets
+        let plan: Vec<ExecutionStage> = sorted_targets
             .into_iter()
-            .map(|target| vec![target])
+            .map(|target| ExecutionStage {
+                targets: vec![ClusterTarget { name: target.name }],
+                action: ActionDetails::Apply {
+                    manifests: manifests.to_string(),
+                    variables: BTreeMap::new(),
+                },
+            })
             .collect();
 
         Ok(plan)
+    }
+}
+
+/// # BlueGreen Strategy
+///
+/// Implements a multi-cluster blue-green deployment.
+pub struct BlueGreenStrategy;
+
+impl DeploymentStrategy for BlueGreenStrategy {
+    fn plan_execution(
+        &self,
+        targets: &[Cluster],
+        manifests: &str,
+        app_name: &str,
+        namespace: &str,
+    ) -> Result<Vec<ExecutionStage>> {
+        if targets.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let all_targets = targets
+            .iter()
+            .map(|c| ClusterTarget { name: c.name.clone() })
+            .collect();
+
+        // Stage 1: Deploy Green
+        let mut green_vars = BTreeMap::new();
+        green_vars.insert("color".to_string(), "green".to_string());
+        let deploy_green = ExecutionStage {
+            targets: all_targets.clone(),
+            action: ActionDetails::Apply {
+                manifests: manifests.to_string(),
+                variables: green_vars,
+            },
+        };
+
+        // Stage 2: Health Check Green
+        let health_check_green = ExecutionStage {
+            targets: all_targets.clone(),
+            action: ActionDetails::HealthCheck {
+                app_name: app_name.to_string(),
+                namespace: namespace.to_string(),
+                color: "green".to_string(),
+            },
+        };
+
+        // Stage 3: Switch Traffic
+        let switch_traffic = ExecutionStage {
+            targets: all_targets.clone(),
+            action: ActionDetails::SwitchTraffic {
+                service_name: app_name.to_string(),
+                new_target_color: "green".to_string(),
+            },
+        };
+
+        // Stage 4: Decommission Blue
+        let decommission_blue = ExecutionStage {
+            targets: all_targets,
+            action: ActionDetails::DeleteResources {
+                app_name: app_name.to_string(),
+                color_label: "blue".to_string(),
+            },
+        };
+
+        Ok(vec![
+            deploy_green,
+            health_check_green,
+            switch_traffic,
+            decommission_blue,
+        ])
     }
 }
 
@@ -153,5 +261,6 @@ pub fn get_strategy(strategy_type: &StrategyType) -> Box<dyn DeploymentStrategy>
         StrategyType::Staged => Box::new(StagedStrategy),
         StrategyType::Failover => Box::new(FailoverStrategy),
         StrategyType::Parallel => Box::new(ParallelStrategy),
+        StrategyType::BlueGreen => Box::new(BlueGreenStrategy),
     }
 }

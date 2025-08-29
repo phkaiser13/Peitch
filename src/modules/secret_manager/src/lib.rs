@@ -227,3 +227,102 @@ async fn run_sync_internal(request: SyncRequest) -> Result<()> {
     log::info!("Successfully synchronized Secret '{}'.", request.secret_name);
     Ok(())
 }
+
+use kube::api::ListParams;
+
+/// Replicates secrets from a source cluster to a destination cluster.
+///
+/// This function lists secrets in a given namespace of the source cluster that match
+/// a label selector, and then creates equivalent secrets in the destination cluster.
+///
+/// # Arguments
+/// * `source_client` - The Kubernetes client for the source cluster.
+/// * `dest_client` - The Kubernetes client for the destination cluster.
+/// * `namespace` - The namespace to look for secrets in and create them in.
+/// * `selector` - A label selector string to identify which secrets to replicate.
+pub async fn replicate_secrets(
+    source_client: Client,
+    dest_client: Client,
+    namespace: &str,
+    selector: &str,
+) -> Result<()> {
+    log::info!(
+        "Starting secret replication from namespace '{}' with selector '{}'",
+        namespace,
+        selector
+    );
+
+    let source_api: Api<Secret> = Api::namespaced(source_client, namespace);
+    let dest_api: Api<Secret> = Api::namespaced(dest_client, namespace);
+
+    // 1. List secrets from the source cluster matching the selector.
+    let lp = ListParams::default().labels(selector);
+    let source_secrets = source_api.list(&lp).await.with_context(|| {
+        format!(
+            "Failed to list secrets in namespace '{}' with selector '{}'",
+            namespace, selector
+        )
+    })?;
+
+    if source_secrets.items.is_empty() {
+        log::warn!(
+            "No secrets found to replicate in namespace '{}' with selector '{}'.",
+            namespace,
+            selector
+        );
+        return Ok(());
+    }
+
+    log::info!("Found {} secret(s) to replicate.", source_secrets.items.len());
+
+    // 2. For each secret, create a corresponding secret in the destination cluster.
+    let mut replication_futures = Vec::new();
+
+    for secret in source_secrets.items {
+        let dest_api_clone = dest_api.clone();
+        replication_futures.push(async move {
+            let secret_name = secret.metadata.name.as_deref().unwrap_or("unknown");
+            log::info!("Replicating secret '{}'...", secret_name);
+
+            // Create a new secret object for the destination cluster.
+            // We can't just reuse the old one because it contains cluster-specific
+            // metadata like resourceVersion.
+            let new_secret = Secret {
+                metadata: ObjectMeta {
+                    name: secret.metadata.name,
+                    namespace: secret.metadata.namespace,
+                    labels: secret.metadata.labels,
+                    annotations: secret.metadata.annotations,
+                    ..Default::default()
+                },
+                data: secret.data,
+                type_: secret.type_,
+                ..Default::default()
+            };
+
+            // Use Server-Side Apply to create or update the secret idempotently.
+            let ssapply = PatchParams::apply("ph.secret-replicator");
+            dest_api_clone
+                .patch(secret_name, &ssapply, &Patch::Apply(&new_secret))
+                .await
+                .with_context(|| format!("Failed to apply secret '{}' to destination cluster", secret_name))
+        });
+    }
+
+    // 3. Execute all replications concurrently and collect results.
+    let results = join_all(replication_futures).await;
+    let mut errors = Vec::new();
+    for result in results {
+        if let Err(e) = result {
+            log::error!("Secret replication failed: {:?}", e);
+            errors.push(e);
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!("{} secret(s) failed to replicate.", errors.len()));
+    }
+
+    log::info!("Successfully replicated all targeted secrets.");
+    Ok(())
+}

@@ -82,6 +82,8 @@ thiserror = "1.0.57"
 prost = "0.12.3"
 bytes = "1.6.0"
 
+policy_engine = { path = "../policy_engine" }
+
 [build-dependencies]
 # Compiles .proto files into Rust code during the build process.
 prost-build = "0.12.3"

@@ -10,7 +10,7 @@
 
 #include "preview_handler.h"
 #include "ipc/include/ph_core_api.h"
-#include "ui/tui.h"
+#include "tui/tui.h"
 #include "libs/liblogger/Logger.hpp"
 #include <stdio.h>
 #include <stdlib.h>

@@ -379,18 +379,86 @@ pub struct phAutoHealRuleSpec {
 }
 
 /// Defines a single action to be performed by the auto-heal controller.
-/// Currently, only `runbook` is supported, but this structure allows for future
-/// expansion with other action types like `webhook` or `scale`.
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionSpec {
-    /// Specifies a runbook to be executed.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redeploy: Option<RedeployAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_up: Option<ScaleUpAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runbook: Option<RunbookSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<NotifyAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SnapshotAction>,
+}
+
+/// Defines the parameters for a diagnostic snapshot action.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotAction {
+    /// A name for the snapshot, used for file naming.
+    pub name: String,
+    /// Whether to include pod logs in the snapshot.
+    #[serde(default)]
+    pub include_logs: bool,
+    /// Whether to include OpenTelemetry traces in the snapshot.
+    #[serde(default)]
+    pub include_traces: bool,
+    /// Whether to trigger and include a database dump in the snapshot.
+    #[serde(default)]
+    pub include_db_dump: bool,
+}
+
+/// Defines the parameters for a notification action.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyAction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack: Option<SlackNotify>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<IssueNotify>,
+}
+
+/// Parameters for sending a Slack notification.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackNotify {
+    /// The name of a Secret in the same namespace containing a 'webhookUrl' key.
+    pub webhook_url_secret_ref: String,
+    /// A message template. Can include placeholders like {{ .alert.name }}.
+    pub message: String,
+}
+
+/// Parameters for creating an issue in a tracker.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueNotify {
+    /// The project key or name in the issue tracker.
+    pub project: String,
+    /// A title template for the issue.
+    pub title: String,
+    /// A body/description template for the issue.
+    pub body: String,
+}
+
+/// Action to redeploy a target.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+pub struct RedeployAction {
+    pub target: String,
+}
+
+/// Action to scale up a target.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ScaleUpAction {
+    pub target: String,
+    pub replicas: i32,
 }
 
 /// Contains the details for executing a specific runbook (a script).
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RunbookSpec {
     /// The name of the script to execute. This script is expected to be available

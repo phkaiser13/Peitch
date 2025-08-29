@@ -35,6 +35,8 @@ type ServiceResult<T> = Result<T, ServiceError>;
 pub trait IssueTrackerService {
     /// Fetches details for a single issue by its ID.
     async fn get_issue_details(&self, repo: &str, issue_id: &str) -> ServiceResult<Issue>;
+    /// Creates a new issue.
+    async fn create_issue(&self, repo: &str, title: &str, body: &str) -> ServiceResult<Issue>;
 }
 
 // --- 3. The Concrete Implementation for GitHub ---
@@ -84,6 +86,42 @@ impl IssueTrackerService for GitHubApiService {
 
         // **The crucial mapping step** from the specific API response
         // to our generic, canonical `Issue` model.
+        let issue = Issue {
+            id: api_response.number,
+            title: api_response.title,
+            author: api_response.user.login,
+            state: api_response.state,
+            url: api_response.html_url,
+        };
+
+        Ok(issue)
+    }
+
+    async fn create_issue(&self, repo: &str, title: &str, body: &str) -> ServiceResult<Issue> {
+        let url = format!("https://api.github.com/repos/{}/issues", repo);
+        let token = std::env::var("GITHUB_TOKEN")
+            .map_err(|_| "GITHUB_TOKEN environment variable not set")?;
+
+        #[derive(serde::Serialize)]
+        struct CreateIssuePayload<'a> {
+            title: &'a str,
+            body: &'a str,
+        }
+
+        let payload = CreateIssuePayload { title, body };
+
+        let response = self.client
+            .post(&url)
+            .header("User-Agent", "ph-issue-tracker-module/1.0")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github.v3+json")
+            .json(&payload)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let api_response: GitHubApiResponse = response.json().await?;
+
         let issue = Issue {
             id: api_response.number,
             title: api_response.title,

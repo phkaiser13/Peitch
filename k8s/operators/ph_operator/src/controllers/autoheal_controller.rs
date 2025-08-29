@@ -45,12 +45,16 @@
 //      - After creating the Job, it updates the `phAutoHealRule` status with the
 //        execution timestamp, enabling the cooldown logic for subsequent alerts.
 //
-use crate::crds::{phAutoHealRule, phAutoHealRuleStatus, HealState, StatusCondition};
+use crate::crds::{
+    phAutoHealRule, phAutoHealRuleStatus, HealState, NotifyAction, SnapshotAction, StatusCondition,
+};
 use chrono::{DateTime, Utc};
 use futures::stream::StreamExt;
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    ConfigMapVolumeSource, Container, EnvVar, PodSpec, PodTemplateSpec, Volume, VolumeMount,
+    ConfigMapVolumeSource, Container, EnvVar, PodSpec, PodTemplateSpec, Secret, Volume,
+    VolumeMount,
 };
 use kube::{
     api::{Api, ListParams, Patch, PatchParams, PostParams},
@@ -61,11 +65,14 @@ use kube::{
     },
     Resource, ResourceExt,
 };
+use notification_manager::{send_notification, IssueNotification, SlackNotification};
 use serde::Deserialize;
+use serde_json::json;
+use snapshot_manager::{self, SnapshotConfig};
 use std::{collections::HashMap, sync::Arc};
-use tokio::time::Duration;
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tokio::time::Duration;
 use tracing::{debug, error, field, info, instrument, warn, Span};
 use warp::{http::StatusCode, Filter};
 
@@ -87,6 +94,9 @@ pub enum Error {
 
     #[error("JSON serialization/deserialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
+
+    #[error("Notification/Failover error: {0}")]
+    FailoverError(String),
 }
 
 // --- Controller Context and State ---
@@ -270,7 +280,7 @@ async fn handle_webhook(
 
 // --- Rule Processing and Action Execution ---
 
-/// Processes a single rule: checks cooldown and executes the runbook if applicable.
+/// Processes a single rule: checks cooldown and executes the defined actions if applicable.
 async fn process_rule(rule: phAutoHealRule, alert: Alert, client: Client) -> Result<(), Error> {
     // 1. Cooldown Check
     let now = Utc::now();
@@ -286,47 +296,226 @@ async fn process_rule(rule: phAutoHealRule, alert: Alert, client: Client) -> Res
         }
     }
 
-    // 2. Execute Runbook
-    info!(rule = %rule.name_any(), "Executing runbook action");
-    execute_runbook(&rule, &alert, &client).await?;
+    // 2. Execute all defined actions sequentially.
+    info!(rule = %rule.name_any(), "Executing {} action(s) for rule", rule.spec.actions.len());
+    for (i, action) in rule.spec.actions.iter().enumerate() {
+        info!(action_index = i + 1, "Executing action");
+        if let Some(redeploy) = &action.redeploy {
+            if let Err(e) = execute_redeploy_action(&rule, &alert, &client, redeploy).await {
+                error!(error = %e, "Redeploy action failed");
+                // Optionally, decide if we should stop processing further actions on failure
+            }
+        } else if let Some(scale_up) = &action.scale_up {
+            if let Err(e) = execute_scale_up_action(&rule, &alert, &client, scale_up).await {
+                error!(error = %e, "Scale-up action failed");
+            }
+        } else if let Some(runbook) = &action.runbook {
+            if let Err(e) = execute_runbook_action(&rule, &alert, &client, runbook).await {
+                error!(error = %e, "Runbook action failed");
+            }
+        } else if let Some(notify) = &action.notify {
+            if let Err(e) = execute_notify_action(&rule, &alert, &client, notify).await {
+                error!(error = %e, "Notify action failed");
+            }
+        } else if let Some(snapshot) = &action.snapshot {
+            if let Err(e) = execute_snapshot_action(&rule, &alert, &client, snapshot).await {
+                error!(error = %e, "Snapshot action failed");
+            }
+        } else {
+            warn!("Action at index {} is empty or has an unknown type.", i);
+        }
+    }
 
-    // 3. Update Status
+    // 3. Update Status after all actions are attempted.
     update_status(&rule, &client).await?;
 
     Ok(())
 }
 
+// --- Action Execution Helpers ---
+
+/// Executes a notification action, sending messages to Slack and/or creating an issue.
+async fn execute_notify_action(
+    rule: &phAutoHealRule,
+    alert: &Alert,
+    client: &Client,
+    action: &NotifyAction,
+) -> Result<(), Error> {
+    info!(rule = %rule.name_any(), "Executing notify action");
+
+    let mut slack_payload = None;
+    if let Some(slack_config) = &action.slack {
+        // Fetch the webhook URL from the specified secret
+        let secrets: Api<Secret> = Api::namespaced(client.clone(), rule.namespace().unwrap().as_str());
+        let secret = secrets.get(&slack_config.webhook_url_secret_ref).await?;
+        if let Some(data) = secret.data {
+            if let Some(url_bytes) = data.get("webhookUrl") {
+                let webhook_url = String::from_utf8(url_bytes.0.clone()).unwrap_or_default();
+                if !webhook_url.is_empty() {
+                    // TODO: Implement simple templating for the message
+                    slack_payload = Some(SlackNotification {
+                        webhook_url: &webhook_url,
+                        message: &slack_config.message,
+                    });
+                } else {
+                    warn!("'webhookUrl' key in secret '{}' is empty.", slack_config.webhook_url_secret_ref);
+                }
+            } else {
+                warn!("'webhookUrl' key not found in secret '{}'.", slack_config.webhook_url_secret_ref);
+            }
+        }
+    }
+
+    let mut issue_payload = None;
+    if let Some(issue_config) = &action.issue {
+        // TODO: Implement simple templating for title and body
+        // TODO: The repo needs to be configured somewhere, for now, hardcoding
+        let repo = "phkaiser13/peitch";
+        issue_payload = Some(IssueNotification {
+            repo,
+            title: &issue_config.title,
+            body: &issue_config.body,
+        });
+    }
+
+    send_notification(slack_payload, issue_payload)
+        .await
+        .map_err(|e| Error::FailoverError(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Executes a diagnostic snapshot action.
+async fn execute_snapshot_action(
+    rule: &phAutoHealRule,
+    alert: &Alert,
+    client: &Client,
+    action: &SnapshotAction,
+) -> Result<(), Error> {
+    let ns = rule.namespace().ok_or(Error::MissingObjectKey("namespace"))?;
+    info!(rule = %rule.name_any(), "Executing snapshot action");
+
+    // Try to get the application name from the alert labels. Fallback to a default if not present.
+    let app_name = alert
+        .labels
+        .get("app")
+        .or_else(|| alert.labels.get("app_kubernetes_io_name"))
+        .map(|s| s.as_str())
+        .unwrap_or("unknown-app");
+
+    let config = SnapshotConfig {
+        app_name,
+        namespace: &ns,
+        snapshot_name: &action.name,
+        include_logs: action.include_logs,
+        include_traces: action.include_traces,
+        include_db_dump: action.include_db_dump,
+    };
+
+    match snapshot_manager::take_snapshot(client.clone(), config).await {
+        Ok(filepath) => {
+            info!(
+                rule = %rule.name_any(),
+                filepath = %filepath,
+                "Successfully created diagnostic snapshot"
+            );
+            // Optionally, link the snapshot in a notification
+        }
+        Err(e) => {
+            error!(
+                rule = %rule.name_any(),
+                error = %e,
+                "Failed to create diagnostic snapshot"
+            );
+            // Don't return an error to the controller, just log it.
+        }
+    }
+
+    Ok(())
+}
+
+/// Triggers a rolling restart of a deployment by setting an annotation.
+async fn execute_redeploy_action(
+    rule: &phAutoHealRule,
+    _alert: &Alert,
+    client: &Client,
+    action: &crate::crds::RedeployAction,
+) -> Result<(), Error> {
+    let ns = rule.namespace().ok_or(Error::MissingObjectKey("namespace"))?;
+    let dep_api: Api<Deployment> = Api::namespaced(client.clone(), &ns);
+    let target_name = &action.target;
+
+    info!(deployment = %target_name, "Executing redeploy action");
+
+    let patch = json!({
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "ph.io/restartedAt": Utc::now().to_rfc3339()
+                    }
+                }
+            }
+        }
+    });
+
+    dep_api.patch(target_name, &PatchParams::apply("ph-autoheal-controller"), &Patch::Merge(&patch)).await?;
+    info!(deployment = %target_name, "Successfully triggered redeploy");
+    Ok(())
+}
+
+/// Scales up a deployment to a specified number of replicas.
+async fn execute_scale_up_action(
+    rule: &phAutoHealRule,
+    _alert: &Alert,
+    client: &Client,
+    action: &crate::crds::ScaleUpAction,
+) -> Result<(), Error> {
+    let ns = rule.namespace().ok_or(Error::MissingObjectKey("namespace"))?;
+    let dep_api: Api<Deployment> = Api::namespaced(client.clone(), &ns);
+    let target_name = &action.target;
+    let replicas = action.replicas;
+
+    info!(deployment = %target_name, replicas = replicas, "Executing scale-up action");
+
+    let patch = json!({ "spec": { "replicas": replicas } });
+    dep_api.patch(target_name, &PatchParams::merge(), &Patch::Merge(&patch)).await?;
+    info!(deployment = %target_name, "Successfully scaled up");
+    Ok(())
+}
+
+
 /// Creates a Kubernetes Job to execute the specified runbook script.
-async fn execute_runbook(rule: &phAutoHealRule, alert: &Alert, client: &Client) -> Result<(), Error> {
-    let action = match rule.spec.actions.get(0) {
-        Some(a) => a,
-        None => {
-            warn!(rule = %rule.name_any(), "Rule has no actions defined.");
-            return Ok(());
-        }
-    };
-
-    let runbook = match &action.runbook {
-        Some(r) => r,
-        None => {
-            warn!(rule = %rule.name_any(), "Action is not a runbook.");
-            return Ok(());
-        }
-    };
-
+async fn execute_runbook_action(
+    rule: &phAutoHealRule,
+    alert: &Alert,
+    client: &Client,
+    runbook: &crate::crds::RunbookSpec,
+) -> Result<(), Error> {
     let script_name = &runbook.script_name;
     let job_name = format!("autoheal-{}-{}", rule.name_any(), Utc::now().format("%y%m%d-%H%M%S"));
     let namespace = rule.namespace().ok_or(Error::MissingObjectKey("namespace"))?;
     let jobs_api: Api<Job> = Api::namespaced(client.clone(), &namespace);
 
+    info!(job = %job_name, script = %script_name, "Executing runbook action");
+
     // Pass alert labels as environment variables, sanitizing names for shell compatibility.
-    let env_vars: Vec<EnvVar> = alert.labels.iter()
+    let mut env_vars: Vec<EnvVar> = alert.labels.iter()
         .map(|(k, v)| EnvVar {
             name: format!("ALERT_{}", k.to_uppercase().replace(|c: char| !c.is_ascii_alphanumeric(), "_")),
             value: Some(v.clone()),
             ..Default::default()
         })
         .collect();
+    
+    // Also pass annotations
+    for (k, v) in &alert.annotations {
+        env_vars.push(EnvVar {
+            name: format!("ANNOTATION_{}", k.to_uppercase().replace(|c: char| !c.is_ascii_alphanumeric(), "_")),
+            value: Some(v.clone()),
+            ..Default::default()
+        });
+    }
 
     let job = Job {
         metadata: kube::api::ObjectMeta {
@@ -341,7 +530,7 @@ async fn execute_runbook(rule: &phAutoHealRule, alert: &Alert, client: &Client) 
                 spec: Some(PodSpec {
                     containers: vec![Container {
                         name: "runbook-executor".to_string(),
-                        image: Some("alpine:latest".to_string()), // Executor image
+                        image: Some("alpine:latest".to_string()),
                         command: Some(vec!["/bin/sh".to_string()]),
                         args: Some(vec!["-c".to_string(), format!("/scripts/{}", script_name)]),
                         env: Some(env_vars),
@@ -356,7 +545,7 @@ async fn execute_runbook(rule: &phAutoHealRule, alert: &Alert, client: &Client) 
                     volumes: Some(vec![Volume {
                         name: "runbook-scripts".to_string(),
                         config_map: Some(ConfigMapVolumeSource {
-                            name: Some("autoheal-runbooks".to_string()), // Convention-based ConfigMap name
+                            name: Some("autoheal-runbooks".to_string()),
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -366,7 +555,7 @@ async fn execute_runbook(rule: &phAutoHealRule, alert: &Alert, client: &Client) 
                 ..Default::default()
             },
             backoff_limit: Some(1),
-            ttl_seconds_after_finished: Some(3600), // Clean up finished jobs after 1 hour
+            ttl_seconds_after_finished: Some(3600),
             ..Default::default()
         }),
         ..Default::default()

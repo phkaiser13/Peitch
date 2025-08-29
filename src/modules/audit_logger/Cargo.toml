@@ -1,0 +1,21 @@
+[package]
+name = "audit_logger"
+version = "0.1.0"
+edition = "2021"
+authors = ["Pedro Henrique / phkaiser13"]
+description = "A ph module for creating centralized audit log events as Kubernetes resources."
+license = "Apache-2.0"
+repository = "https://github.com/phkaiser13/peitch"
+
+[lib]
+crate-type = ["rlib"] # It's a regular Rust library
+
+[dependencies]
+anyhow = "1.0.80"
+chrono = { version = "0.4", features = ["serde"] }
+k8s-openapi = { version = "0.20.0" }
+kube = { version = "0.87.2", features = ["derive"] }
+schemars = { version = "0.8.16", features = ["chrono"] }
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }

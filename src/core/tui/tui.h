@@ -19,8 +19,11 @@
 #ifndef TUI_H
 #define TUI_H
 
-#include <stdbool.h> // Para o tipo bool
-#include <stddef.h>  // Para o tipo size_t
+/* BEGIN CHANGE: Translated comments to English and ensured standard headers. */
+// TRANSLATED FROM pt-br BY ASSISTANT
+#include <stdbool.h> // For bool type
+#include <stddef.h>  // For size_t type
+/* END CHANGE */
 
 #ifdef __cplusplus
 extern "C" {

@@ -16,6 +16,7 @@
 * SPDX-License-Identifier: Apache-2.0 */
 
 mod cluster_manager;
+mod dr_crd;
 
 // --- Generated Protobuf Structs ---
 // This includes the generated code from `rpc_data.proto`, including our `ErrorPayload`.
@@ -26,10 +27,14 @@ pub mod ph {
 }
 
 use crate::cluster_manager::{Cluster, ClusterManager, ClustersConfig, MultiClusterConfig};
+use crate::dr_crd::{
+    ClusterConnection, DrClusterConnection, DrPolicy, FailoverTrigger, HealthCheckPolicy,
+    PhgitDisasterRecovery, PhgitDisasterRecoverySpec, TargetApplication,
+};
 use anyhow::{anyhow, Context, Result};
 use k8s_openapi::api::apps::v1::Deployment;
 use kube::{
-    api::{Api, Patch, PatchParams},
+    api::{Api, Patch, PatchParams, PostParams},
     Client, Config,
 };
 use serde::Deserialize;
@@ -191,13 +196,14 @@ async fn run(config_json: *const c_char) -> Result<(), Error> {
     Ok(())
 }
 
-/// Handles the logic for the 'failover' action.
+/// Handles the logic for the 'failover' action by creating a PhgitDisasterRecovery resource.
 async fn handle_failover_action(config: FailoverConfig) -> Result<(), Error> {
     println!(
-        "Initiating failover for app '{}' from cluster '{}' to cluster '{}'",
+        "Triggering Disaster Recovery for app '{}' from cluster '{}' to cluster '{}'",
         config.app, config.from_cluster, config.to_cluster
     );
 
+    // This helper function remains local as it's only used here now.
     async fn get_client(cluster_name: &str) -> Result<Client, Error> {
         let kubeconfig_path = format!("/etc/ph/kubeconfigs/{}.yaml", cluster_name);
         let config = Config::from_kubeconfig(&kube::config::Kubeconfig::read_from(&kubeconfig_path).map_err(|e| anyhow!(e))?)
@@ -207,20 +213,51 @@ async fn handle_failover_action(config: FailoverConfig) -> Result<(), Error> {
             .map_err(|source| Error::ClientInitialization{ cluster_name: cluster_name.to_string(), source })
     }
 
-    let from_client = get_client(&config.from_cluster).await?;
-    let _to_client = get_client(&config.to_cluster).await?;
+    // Assume the DR resource is created in the primary cluster's management namespace.
+    let client = get_client(&config.from_cluster).await?;
+    let api: Api<PhgitDisasterRecovery> = Api::default_namespaced(client);
 
-    println!("Scaling down deployment '{}' in cluster '{}'...", config.app, config.from_cluster);
-    let deployments: Api<Deployment> = Api::namespaced(from_client, "default");
-    let scale_patch = Patch::Merge(json!({ "spec": { "replicas": 0 } }));
-    deployments.patch(&config.app, &PatchParams::default(), &scale_patch).await
-        .with_context(|| format!("Failed to scale down deployment '{}'", config.app))?;
-    
-    println!("[SKIPPED] Secret and ConfigMap synchronization for DR is not yet implemented.");
-    println!("Applying manifests for app '{}' to cluster '{}'...", config.app, config.to_cluster);
-    println!("Manifests for app '{}' applied successfully.", config.app);
-    
-    println!("[SUCCESS] Failover for app '{}' completed.", config.app);
+    // The spec for the DR resource is constructed from the CLI input and defaults.
+    // A real-world implementation might fetch a more detailed policy from a config source.
+    let dr_spec = PhgitDisasterRecoverySpec {
+        primary_cluster: ClusterConnection {
+            kubeconfig_secret_ref: format!("{}-kubeconfig", config.from_cluster),
+        },
+        dr_cluster: DrClusterConnection {
+            kubeconfig_secret_ref: format!("{}-kubeconfig", config.to_cluster),
+            replicas: 3, // A reasonable default
+        },
+        target_application: TargetApplication {
+            deployment_name: config.app.clone(),
+            namespace: "default".to_string(), // Assuming default namespace for now
+        },
+        policy: DrPolicy {
+            health_check: HealthCheckPolicy {
+                // Placeholder policy details.
+                prometheus_query: "vector(1)".to_string(),
+                success_condition: "value == 1".to_string(),
+                interval: "1m".to_string(),
+                failure_threshold: 3,
+            },
+            // The CLI command is a manual trigger for the failover process.
+            failover_trigger: FailoverTrigger::Manual,
+            notification: Default::default(),
+        },
+    };
+
+    // The name of the DR resource should be unique and descriptive, e.g., based on the app name.
+    let dr_resource = PhgitDisasterRecovery::new(&config.app, dr_spec);
+
+    // Create the resource in the cluster. This triggers the dr-controller.
+    api.create(&PostParams::default(), &dr_resource)
+        .await
+        .map_err(|e| anyhow!(e))?;
+
+    println!(
+        "[SUCCESS] PhgitDisasterRecovery resource for app '{}' created. The DR operator will now handle the failover process.",
+        config.app
+    );
+
     Ok(())
 }
 
@@ -236,11 +273,7 @@ async fn handle_apply_action(config: MultiClusterConfig) -> Result<(), Error> {
         .collect();
 
     let manager = ClusterManager::new(&config.cluster_configs).await?;
-    let results = match &config.action {
-        cluster_manager::Action::Apply { manifests, strategy } => {
-            manager.execute_action(&target_clusters, manifests, strategy).await?
-        }
-    };
+    let results = manager.execute_action(&target_clusters, &config.action).await?;
     
     println!("\n--- Multi-Cluster Operation Report ---");
     let mut all_successful = true;

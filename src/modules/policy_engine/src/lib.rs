@@ -24,7 +24,9 @@ use anyhow::{anyhow, Context, Result};
 use libc::c_char;
 use serde::Deserialize;
 use std::ffi::CStr;
+use std::fs;
 use std::str;
+use tempfile::Builder;
 use tokio::process::Command;
 
 // --- Submodule Declarations ---
@@ -175,5 +177,56 @@ pub extern "C" fn run_policy_engine(config_json: *const c_char) -> i32 {
             eprintln!("[RUST FFI ERROR] Failed to convert C string (invalid UTF-8?): {:?}", e);
             2
         }
+    }
+}
+
+/// Validates a string of Kubernetes manifests against a string of Rego policies.
+///
+/// This function creates temporary files for the manifests and policies, invokes
+/// `conftest` to run the validation, and returns the result.
+///
+/// # Arguments
+/// * `manifests` - A string containing one or more YAML documents of Kubernetes resources.
+/// * `policies` - A string containing one or more Rego policy documents.
+///
+/// # Returns
+/// A `Result` which is `Ok(())` on success or an `Err` containing the `conftest`
+/// output if any policy violations are found.
+pub async fn validate_manifests(manifests: &str, policies: &str) -> Result<()> {
+    // 1. Create a temporary directory for the policies.
+    let policy_dir = Builder::new().prefix("ph-policies").tempdir()?;
+    let policy_file_path = policy_dir.path().join("policy.rego");
+    fs::write(&policy_file_path, policies)?;
+
+    // 2. Create a temporary file for the manifests.
+    let manifest_file = Builder::new().prefix("ph-manifest").suffix(".yaml").tempfile()?;
+    fs::write(manifest_file.path(), manifests)?;
+
+    println!("[policy_engine] Running 'conftest' validation...");
+    println!("[policy_engine]   - Manifests at: {}", manifest_file.path().display());
+    println!("[policy_engine]   - Policies at: {}", policy_dir.path().display());
+
+    // 3. Execute conftest.
+    let output = Command::new("conftest")
+        .arg("test")
+        .arg("--policy")
+        .arg(policy_dir.path())
+        .arg(manifest_file.path())
+        .output()
+        .await
+        .context("Failed to execute 'conftest' process. Is it installed and in the system's PATH?")?;
+
+    let stdout = str::from_utf8(&output.stdout)?;
+    let stderr = str::from_utf8(&output.stderr)?;
+
+    if output.status.success() {
+        println!("[policy_engine] ✅ Manifests passed policy validation.");
+        Ok(())
+    } else {
+        let full_output = format!(
+            "Policy validation failed.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            stdout, stderr
+        );
+        Err(anyhow!(full_output))
     }
 }

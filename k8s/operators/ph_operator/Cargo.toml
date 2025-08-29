@@ -85,6 +85,11 @@ tracing-opentelemetry = "0.22.0"
 
 # Provides functionality for verifying container image signatures.
 signature_verifier = { path = "../../modules/signature_verifier" }
+secret_manager = { path = "../../modules/secret_manager" }
+notification_manager = { path = "../../modules/notification_manager" }
+snapshot_manager = { path = "../../modules/snapshot_manager" }
 
 # Provides a convenient, ergonomic error handling library.
 anyhow = "1.0"
+log = "0.4"
+base64 = "0.21"

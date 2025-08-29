@@ -20,7 +20,7 @@
 * SPDX-License-Identifier: Apache-2.0 */
 
 #include "policy_handler.h"
-#include "ui/tui.h"
+#include "tui/tui.h"
 #include "libs/liblogger/Logger.hpp"
 #include <stdio.h>
 #include <string.h>

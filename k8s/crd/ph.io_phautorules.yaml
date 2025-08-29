@@ -1,0 +1,57 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: phautohealrules.ph.kaiser.io
+spec:
+  group: ph.kaiser.io
+  scope: Namespaced
+  names:
+    plural: phautohealrules
+    singular: phautohealrule
+    kind: phAutoHealRule
+    shortNames:
+      - phr
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - triggerName
+                - cooldown
+                - actions
+              properties:
+                triggerName:
+                  type: string
+                  description: "The name of the Prometheus Alertmanager alert that triggers this rule."
+                cooldown:
+                  type: string
+                  description: "The cooldown period after an action is executed (e.g., '5m')."
+                actions:
+                  type: array
+                  description: "A list of actions to perform when the rule is triggered."
+                  items:
+                    type: object
+                    properties:
+                      redeploy:
+                        type: object
+                        properties:
+                          target:
+                            type: string
+                      scaleUp:
+                        type: object
+                        properties:
+                          target:
+                            type: string
+                          replicas:
+                            type: integer
+                      runbook:
+                        type: object
+                        properties:
+                          scriptName:
+                            type: string

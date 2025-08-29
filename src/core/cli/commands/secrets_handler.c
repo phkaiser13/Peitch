@@ -28,7 +28,7 @@
 
 #include "secrets_handler.h"
 #include "ipc/include/ph_core_api.h"
-#include "ui/tui.hh"
+#include "tui/tui.hh"
 #include "libs/liblogger/Logger.hpp"
 #include "config/config_manager.h" // The real configuration manager
 #include <stdio.h>

@@ -186,3 +186,12 @@ pub extern "C" fn module_exec(argc: c_int, argv: *const *const c_char) -> phStat
 pub extern "C" fn module_cleanup() {
     log_to_core(phLogLevel::Info, "issue_tracker module cleaned up.");
 }
+
+pub async fn create_issue(repo: &str, title: &str, body: &str) -> Result<issue_service::Issue, String> {
+    log_to_core(phLogLevel::Info, &format!("Creating issue in repo '{}' with title '{}'", repo, title));
+    
+    // We hardcode the GitHub service for now.
+    let service: Box<dyn issue_service::IssueTrackerService> = Box::new(issue_service::GitHubApiService::new());
+
+    service.create_issue(repo, title, body).await.map_err(|e| e.to_string())
+}

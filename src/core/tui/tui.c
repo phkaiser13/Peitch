@@ -23,6 +23,11 @@
 #include <stdbool.h>
 #include "libs/liblogger/Logger.hpp"
 
+/* BEGIN CHANGE: Added constants for the new layout. */
+#define PEACH_ART_FILE "peitch.ansi"
+#define GUTTER_WIDTH 4
+/* END CHANGE */
+
 // --- Private Helper Structures and Functions ---
 
 typedef enum {
@@ -106,16 +111,13 @@ static MenuItem* gather_all_commands(size_t* out_count) {
     }
 
     size_t lua_command_count = 0;
-    /* lua_bridge_get_command_count may return 0 on error or no commands; assume it returns valid size_t */
     lua_command_count = lua_bridge_get_command_count();
 
     size_t total_commands = native_command_count + lua_command_count;
     if (total_commands == 0) {
-        // no commands found -> return NULL but set out_count to 0 as contract
         return NULL;
     }
 
-    /* Allocate zeroed items to allow safe cleanup on partial failure. */
     MenuItem* items = calloc(total_commands, sizeof(MenuItem));
     if (!items) {
         logger_log(LOG_LEVEL_FATAL, "TUI", "Failed to allocate memory for menu items.");
@@ -124,7 +126,6 @@ static MenuItem* gather_all_commands(size_t* out_count) {
 
     size_t idx = 0;
 
-    /* Populate native commands (if any) */
     if (modules && native_module_count > 0) {
         for (int i = 0; i < native_module_count && idx < total_commands; i++) {
             if (!modules[i]) continue;
@@ -136,7 +137,6 @@ static MenuItem* gather_all_commands(size_t* out_count) {
                 char* desc_dup = safe_strdup_or_empty(module_desc ? module_desc : "");
                 if (!name_dup || !desc_dup) {
                     logger_log(LOG_LEVEL_ERROR, "TUI", "Out of memory while duplicating native command strings.");
-                    /* cleanup of already created entries */
                     free(name_dup);
                     free(desc_dup);
                     free_menu_items(items, idx);
@@ -151,11 +151,9 @@ static MenuItem* gather_all_commands(size_t* out_count) {
         }
     }
 
-    /* Populate Lua commands (if any) */
     if (lua_command_count > 0) {
         const char** lua_names = lua_bridge_get_all_command_names();
         if (!lua_names) {
-            /* Unexpected: count > 0 but names list NULL -> treat as error */
             logger_log(LOG_LEVEL_ERROR, "TUI", "Lua bridge reported commands but returned no names.");
             free_menu_items(items, idx);
             *out_count = 0;
@@ -185,7 +183,6 @@ static MenuItem* gather_all_commands(size_t* out_count) {
         lua_bridge_free_command_names_list(lua_names);
     }
 
-    /* Sanity check: idx should equal total_commands, but allow if fewer (unexpectedly) */
     *out_count = idx;
     if (idx == 0) {
         free_menu_items(items, 0);
@@ -195,82 +192,152 @@ static MenuItem* gather_all_commands(size_t* out_count) {
     return items;
 }
 
-/* Compute column width for nicer alignment; cap to avoid super-wide layouts. */
-static size_t compute_name_column_width(const MenuItem* items, size_t count) {
-    size_t max = 0;
-    const size_t cap = 40; /* max column width */
-    for (size_t i = 0; i < count; ++i) {
-        if (!items[i].name) continue;
-        size_t len = strlen(items[i].name);
-        if (len > max) max = len;
+/* BEGIN CHANGE: New functions to load and manage the ANSI art file. */
+/**
+ * @brief Loads an ANSI art file line by line into a dynamically allocated array of strings.
+ *
+ * @param filename The path to the ANSI art file.
+ * @param out_lines A pointer to receive the array of strings.
+ * @param out_line_count A pointer to receive the number of lines read.
+ * @return true on success, false on failure. The caller must free the lines with free_ansi_art.
+ */
+static bool load_ansi_art(const char* filename, char*** out_lines, size_t* out_line_count) {
+    *out_lines = NULL;
+    *out_line_count = 0;
+
+    FILE* fp = fopen(filename, "r");
+    if (!fp) {
+        logger_log(LOG_LEVEL_WARN, "TUI", "Could not open ANSI art file: %s", filename);
+        return false;
     }
-    if (max > cap) max = cap;
-    if (max < 8) max = 8; /* minimum width for aesthetics */
-    return max;
-}
 
-static void display_menu(const MenuItem* items, size_t count) {
-    platform_clear_screen();
-    printf("========================================\n");
-    printf("  ph - The Polyglot Git Helper\n");
-    printf("========================================\n\n");
-    printf("Please select a command:\n\n");
+    char* line = NULL;
+    size_t len = 0;
+    size_t read;
+    size_t count = 0;
+    char** lines = NULL;
 
-    if (count > 0 && items) {
-        size_t name_col = compute_name_column_width(items, count);
-        for (size_t i = 0; i < count; ++i) {
-            const char* name = items[i].name ? items[i].name : "";
-            const char* desc = items[i].description ? items[i].description : "";
-            /* If name is longer than column width, print truncated with ellipsis (safe) */
-            if (strlen(name) > name_col) {
-                char truncated[64];
-                /* calculate how many chars we can take so that + "..." fits */
-                size_t avail = sizeof(truncated) - 1; /* room for NUL */
-                size_t dot_len = 3; /* "..." */
-                size_t take = name_col > dot_len ? (name_col - dot_len) : 1;
-                if (take > avail - dot_len) take = avail - dot_len;
-                /* use snprintf for safe bounded copy + ellipsis */
-                int written = snprintf(truncated, sizeof(truncated), "%.*s...", (int)take, name);
-                if (written < 0 || (size_t)written >= sizeof(truncated)) {
-                    /* fallback in improbable snprintf failure */
-                    strncpy(truncated, name, sizeof(truncated) - 4);
-                    truncated[sizeof(truncated) - 4] = '\0';
-                    strcat(truncated, "...");
-                }
-                printf("  [%2zu] %-*s - %s\n", i + 1, (int)name_col, truncated, desc);
-            } else {
-                printf("  [%2zu] %-*s - %s\n", i + 1, (int)name_col, name, desc);
+    while ((read = getline(&line, &len, fp)) != -1) {
+        char** new_lines = realloc(lines, (count + 1) * sizeof(char*));
+        if (!new_lines) {
+            logger_log(LOG_LEVEL_FATAL, "TUI", "Failed to realloc for ANSI art lines.");
+            free(line);
+            for (size_t i = 0; i < count; ++i) free(lines[i]);
+            free(lines);
+            fclose(fp);
+            return false;
+        }
+        lines = new_lines;
+
+        // Strip trailing newline characters
+        if (read > 0 && line[read - 1] == '\n') {
+            line[read - 1] = '\0';
+            if (read > 1 && line[read - 2] == '\r') {
+                line[read - 2] = '\0';
             }
         }
-    } else {
-        printf("  No commands available.\n");
+        
+        lines[count] = strdup(line);
+        if (!lines[count]) {
+             logger_log(LOG_LEVEL_FATAL, "TUI", "Failed to strdup ANSI art line.");
+             free(line);
+             for (size_t i = 0; i < count; ++i) free(lines[i]);
+             free(lines);
+             fclose(fp);
+             return false;
+        }
+        count++;
     }
 
-    printf("\n  [%2zu] Exit\n", count + 1);
-    printf("\n----------------------------------------\n");
+    free(line);
+    fclose(fp);
+    *out_lines = lines;
+    *out_line_count = count;
+    return true;
 }
 
-/* Wait for enter: ensure any pending input is discarded FIRST, then wait for a fresh newline.
-   This avoids the "leftover chars cause immediate return" problem. */
-static void wait_for_enter(void) {
-    /* Discard any pending characters from previous input (if any). */
-    flush_stdin_until_newline();
-
-    printf("\nPress Enter to continue...");
-    /* Now wait for a fresh newline from the user. */
-    int c;
-    while ((c = getchar()) != '\n' && c != EOF) {
-        /* spin until newline (user pressed Enter) or EOF */
+/**
+ * @brief Frees the memory allocated by load_ansi_art.
+ */
+static void free_ansi_art(char** lines, size_t line_count) {
+    if (!lines) return;
+    for (size_t i = 0; i < line_count; ++i) {
+        free(lines[i]);
     }
+    free(lines);
+}
+
+/**
+ * @brief Displays the menu with a two-column layout: ANSI art on the left, options on the right.
+ */
+static void display_menu(const MenuItem* items, size_t count) {
+    platform_clear_screen();
+
+    char** art_lines = NULL;
+    size_t art_line_count = 0;
+    bool has_art = load_ansi_art(PEACH_ART_FILE, &art_lines, &art_line_count);
+
+    if (has_art) {
+        size_t max_art_width = 0;
+        for (size_t i = 0; i < art_line_count; ++i) {
+            // A simple strlen is not accurate for ANSI, but it's a decent proxy for alignment.
+            // For perfect alignment, one would need to parse and ignore ANSI escape codes.
+            size_t current_len = strlen(art_lines[i]);
+            if (current_len > max_art_width) {
+                max_art_width = current_len;
+            }
+        }
+
+        size_t max_rows = (art_line_count > count) ? art_line_count : count;
+
+        for (size_t i = 0; i < max_rows; ++i) {
+            // Print art line or empty space
+            if (i < art_line_count) {
+                printf("%s", art_lines[i]);
+                // This padding is imperfect due to ANSI codes but works for this specific art.
+            }
+            
+            // Print gutter and menu item
+            if (i < count) {
+                // Add spacing to create the second column
+                printf("%*s", GUTTER_WIDTH, "");
+                printf("%-2zu- (%s)", i + 1, items[i].name);
+            }
+            printf("\n");
+        }
+        free_ansi_art(art_lines, art_line_count);
+    } else {
+        // Fallback to a simple text-based menu if art file is missing
+        printf("========================================\n");
+        printf("  ph - The Polyglot Git Helper\n");
+        printf("========================================\n\n");
+        printf("Please select a command:\n\n");
+        if (count > 0) {
+            for (size_t i = 0; i < count; ++i) {
+                printf("  %zu-(%s)\n", i + 1, items[i].name);
+            }
+        } else {
+            printf("  No commands available.\n");
+        }
+    }
+    printf("\n----------------------------------------\n");
+}
+/* END CHANGE */
+
+/* Wait for enter: ensure any pending input is discarded FIRST, then wait for a fresh newline.
+This avoids the "leftover chars cause immediate return" problem. */
+static void wait_for_enter(void) {
+    printf("\nPress Enter to continue...");
+    fflush(stdout);
+    /* Discard any pending characters from previous input (if any). */
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF) { /* discard */ }
+    /* Now wait for a fresh newline from the user. */
+    while ((c = getchar()) != '\n' && c != EOF) { /* spin */ }
 }
 
 /* --- Public API Implementation --- */
 
-/*
- * Enhanced prompt: reads a line into buffer (size buffer_size).
- * If the line is longer than buffer_size-1, the remainder of that input line is discarded
- * so we don't leave junk in stdin for subsequent reads.
- */
 bool tui_prompt_user(const char* prompt, char* buffer, size_t buffer_size) {
     if (!buffer || buffer_size == 0) return false;
     printf("%s", prompt);
@@ -282,11 +349,8 @@ bool tui_prompt_user(const char* prompt, char* buffer, size_t buffer_size) {
 
     size_t len = strcspn(buffer, "\r\n");
     if (len < strlen(buffer)) {
-        /* we found a newline inside buffer; strip it */
         buffer[len] = '\0';
     } else {
-        /* No newline inside the buffer => the input line was longer than buffer - 1
-           => discard the remainder up to newline so the next read starts fresh. */
         int ch;
         while ((ch = getchar()) != '\n' && ch != EOF) { /* discard */ }
     }
@@ -299,21 +363,34 @@ void tui_show_main_menu(void) {
         size_t item_count = 0;
         MenuItem* menu_items = gather_all_commands(&item_count);
 
-        if (menu_items && item_count > 0) {
-            qsort(menu_items, item_count, sizeof(MenuItem), compare_menu_items);
+        /* BEGIN CHANGE: Integrate "Exit" option directly into the menu list for unified display. */
+        // Add one more item for "Exit"
+        MenuItem* new_items = realloc(menu_items, (item_count + 1) * sizeof(MenuItem));
+        if (!new_items) {
+            tui_print_error("Failed to allocate memory for exit menu item.");
+            free_menu_items(menu_items, item_count);
+            break;
+        }
+        menu_items = new_items;
+        
+        menu_items[item_count].name = safe_strdup_or_empty("Exit");
+        menu_items[item_count].description = safe_strdup_or_empty("Exit the application.");
+        menu_items[item_count].source = COMMAND_SOURCE_NATIVE; // Or some other sentinel
+        item_count++;
+        /* END CHANGE */
+
+        if (menu_items && item_count > 1) { // Sort all but the new "Exit" item
+            qsort(menu_items, item_count - 1, sizeof(MenuItem), compare_menu_items);
         }
 
         display_menu(menu_items, item_count);
 
-        /* Prompt the user */
         char input_buffer[64];
         if (!tui_prompt_user("Your choice: ", input_buffer, sizeof(input_buffer))) {
-            /* EOF or error */
             free_menu_items(menu_items, item_count);
             break;
         }
 
-        /* Robust parsing of integer input */
         char* endptr = NULL;
         errno = 0;
         long choice = strtol(input_buffer, &endptr, 10);
@@ -324,24 +401,28 @@ void tui_show_main_menu(void) {
             continue;
         }
 
+        /* BEGIN CHANGE: Updated choice logic to handle the integrated "Exit" command. */
         if (choice > 0 && (size_t)choice <= item_count) {
-            /* safe because choice is within item_count */
             const MenuItem* selected = &menu_items[choice - 1];
-            const char* argv[] = { "ph", selected->name ? selected->name : "", NULL };
+            
+            // Check if the selected item is "Exit"
+            if (selected->name && strcmp(selected->name, "Exit") == 0) {
+                free_menu_items(menu_items, item_count);
+                break; // Exit the loop
+            }
 
+            const char* argv[] = { "ph", selected->name ? selected->name : "", NULL };
             printf("\nExecuting '%s'...\n", selected->name ? selected->name : "<unknown>");
             printf("----------------------------------------\n");
             cli_dispatch_command(2, argv);
             printf("----------------------------------------\n");
             wait_for_enter();
 
-        } else if (choice == (long)item_count + 1) {
-            free_menu_items(menu_items, item_count);
-            break; /* Exit */
         } else {
             tui_print_error("Invalid choice. Please try again.");
             wait_for_enter();
         }
+        /* END CHANGE */
 
         free_menu_items(menu_items, item_count);
     }

@@ -28,7 +28,7 @@
 // Core module headers
 #include "platform/platform.h"
 #include "config/config_manager.h"
-#include "ui/tui.h"
+#include "tui/tui.h"
 #include "cli/cli_parser.h"
 #include "module_loader/loader.h"
 #include "scripting/lua-h/lua_bridge.h"

@@ -34,6 +34,7 @@ use crate::crds::{
 };
 use crate::metrics_analyzer::{AnalysisResult, PrometheusClient};
 use anyhow::Result;
+use secret_manager::replicate_secrets;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
@@ -230,10 +231,19 @@ pub async fn reconcile(
             let patch = json!({ "spec": { "replicas": 0 } });
             primary_dep_api.patch(app_name, &PatchParams::merge(), &Patch::Merge(&patch)).await?;
 
-            // 2. Replicate resources (Secrets & ConfigMaps)
-            println!("Replicating Secrets and ConfigMaps for '{}'", app_name);
-            replicate_resources(&primary_client, &dr_client, app_ns, app_name).await?;
+            // 2. Replicate Secrets using the shared secret_manager module.
+            println!("Replicating Secrets for '{}'", app_name);
+            let label_selector = format!("{}={}", APP_INSTANCE_LABEL, app_name);
+            replicate_secrets(primary_client.clone(), dr_client.clone(), app_ns, &label_selector)
+                .await
+                .map_err(|e| Error::FailoverError(format!("Secret replication failed: {}", e)))?;
             
+            // TODO: A similar function should be created for ConfigMaps. For now, we log it.
+            println!("[INFO] ConfigMap replication is not yet refactored into a shared module.");
+
+            // Placeholder for artifact replication
+            println!("[INFO] Artifact replication (e.g., container images) is a manual process or not yet implemented.");
+
             // 3. Scale up DR deployment
             println!("Scaling up DR deployment '{}' in namespace '{}'", app_name, app_ns);
             let dr_dep_api: Api<Deployment> = Api::namespaced(dr_client.clone(), app_ns);
@@ -277,31 +287,6 @@ pub async fn reconcile(
     }
 }
 
-/// Replicates all Secrets and ConfigMaps associated with an application to a peer cluster.
-async fn replicate_resources(primary_client: &Client, dr_client: &Client, ns: &str, app_name: &str) -> Result<(), Error> {
-    let label_selector = format!("{}={}", APP_INSTANCE_LABEL, app_name);
-    let lp = ListParams::default().labels(&label_selector);
-    let ssapply = PatchParams::apply("ph-dr-controller");
-
-    // Replicate Secrets
-    let secrets_api_primary: Api<Secret> = Api::namespaced(primary_client.clone(), ns);
-    let secrets_to_replicate = secrets_api_primary.list(&lp).await?;
-    let secrets_api_peer: Api<Secret> = Api::namespaced(dr_client.clone(), ns);
-    for mut secret in secrets_to_replicate {
-        secret.metadata.resource_version = None;
-        secrets_api_peer.patch(&secret.name_any(), &ssapply, &Patch::Apply(&secret)).await?;
-    }
-
-    // Replicate ConfigMaps
-    let cm_api_primary: Api<ConfigMap> = Api::namespaced(primary_client.clone(), ns);
-    let cms_to_replicate = cm_api_primary.list(&lp).await?;
-    let cm_api_peer: Api<ConfigMap> = Api::namespaced(dr_client.clone(), ns);
-    for mut cm in cms_to_replicate {
-        cm.metadata.resource_version = None;
-        cm_api_peer.patch(&cm.name_any(), &ssapply, &Patch::Apply(&cm)).await?;
-    }
-    Ok(())
-}
 
 /// Parses a simple duration string (e.g., "1m", "30s") into a `Duration`.
 fn parse_duration_str(s: &str) -> Result<Duration, Error> {

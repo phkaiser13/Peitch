@@ -187,7 +187,7 @@ file(GLOB_RECURSE CORE_SOURCES
 "src/core/module_loader/*.c"
 "src/core/platform/*.c"
 "src/core/scripting/*.c"
-"src/core/ui/*.c"
+"src/core/tui/*.c"
 "src/libs/libcommon/*.c"
 )
 add_executable(ph ${CORE_SOURCES})

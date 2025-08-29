@@ -26,7 +26,7 @@
 
 #include "cli_parser.h"
 #include "module_loader/loader.h"
-#include "ui/tui.h"
+#include "tui/tui.h"
 #include "libs/liblogger/Logger.hpp"
 #include "scripting/lua-h/lua_bridge.h"
 #include "commands/kube_handler.h"

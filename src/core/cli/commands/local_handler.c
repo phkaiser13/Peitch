@@ -19,7 +19,7 @@
 
 #include "local_handler.h"
 #include "libs/liblogger/Logger.hpp"
-#include "ui/tui.h" // Although not used for output, good practice to include for consistency
+#include "tui/tui.h" // Although not used for output, good practice to include for consistency
 #include <stdio.h>
 #include <string.h>
 

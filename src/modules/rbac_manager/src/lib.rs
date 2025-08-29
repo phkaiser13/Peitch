@@ -11,14 +11,15 @@
 */
 
 use anyhow::{anyhow, Context, Result};
+use audit_logger::{log_audit_event, Target};
+use k8s_openapi::api::rbac::v1 as rbac;
 use kube::{
     api::{Api, ObjectMeta, PostParams},
     Client, Config,
 };
 use kube::config::{Kubeconfig, KubeConfigOptions};
-use k8s_openapi::api::rbac::v1 as rbac;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::PathBuf;
@@ -208,13 +209,43 @@ async fn handle_grant(client: Client, payload: GrantPayload) -> Result<()> {
     let binding = build_role_binding(&payload)?;
     let binding_name = binding.metadata.name.clone().unwrap_or_default();
 
-    let api: Api<rbac::RoleBinding> = Api::namespaced(client, "default");
+    let api: Api<rbac::RoleBinding> = Api::namespaced(client.clone(), "default");
     let params = PostParams::default();
 
-    api.create(&params, &binding).await
+    api.create(&params, &binding)
+        .await
         .with_context(|| format!("Failed to create RoleBinding '{}'", binding_name))?;
 
-    println!("[rbac_manager] Successfully created RoleBinding '{}' in namespace 'default'.", binding_name);
+    println!(
+        "[rbac_manager] Successfully created RoleBinding '{}' in namespace 'default'.",
+        binding_name
+    );
+
+    // --- Audit Logging ---
+    let mut details = BTreeMap::new();
+    details.insert("role".to_string(), payload.role.clone());
+    details.insert("subject".to_string(), payload.subject.clone());
+
+    let target = Some(Target {
+        kind: Some("Cluster".to_string()),
+        name: Some(payload.cluster.clone()),
+        namespace: None,
+    });
+
+    // The actor is unknown in this context, so we pass None.
+    if let Err(e) = log_audit_event(
+        client,
+        "grant".to_string(),
+        "rbac_manager".to_string(),
+        None,
+        target,
+        details,
+    )
+    .await
+    {
+        eprintln!("[rbac_manager] WARNING: Failed to create audit event: {}", e);
+    }
+
     Ok(())
 }
 
@@ -227,26 +258,129 @@ async fn handle_revoke(client: Client, payload: RevokePayload) -> Result<()> {
     let (subject_kind, subject_name) = get_subject(&payload.subject);
     let binding_name = get_binding_name(&payload.role, &subject_kind, &subject_name);
 
+    let api: Api<rbac::RoleBinding> = Api::namespaced(client.clone(), "default");
 
-    let api: Api<rbac::RoleBinding> = Api::namespaced(client, "default");
-
-    match api.delete(&binding_name, &Default::default()).await {
+    let result = match api.delete(&binding_name, &Default::default()).await {
         Ok(_) => {
-            println!("[rbac_manager] Successfully deleted RoleBinding '{}' from namespace 'default'.", binding_name);
+            println!(
+                "[rbac_manager] Successfully deleted RoleBinding '{}' from namespace 'default'.",
+                binding_name
+            );
             Ok(())
-        },
+        }
         Err(kube::Error::Api(e)) if e.code == 404 => {
-            println!("[rbac_manager] RoleBinding '{}' not found. Assuming already revoked.", binding_name);
+            println!(
+                "[rbac_manager] RoleBinding '{}' not found. Assuming already revoked.",
+                binding_name
+            );
             Ok(())
         }
         Err(e) => Err(e).with_context(|| format!("Failed to delete RoleBinding '{}'", binding_name)),
+    };
+
+    if result.is_ok() {
+        // --- Audit Logging ---
+        let mut details = BTreeMap::new();
+        details.insert("role".to_string(), payload.role.clone());
+        details.insert("subject".to_string(), payload.subject.clone());
+
+        let target = Some(Target {
+            kind: Some("Cluster".to_string()),
+            name: Some(payload.cluster.clone()),
+            namespace: None,
+        });
+
+        if let Err(e) = log_audit_event(
+            client,
+            "revoke".to_string(),
+            "rbac_manager".to_string(),
+            None,
+            target,
+            details,
+        )
+        .await
+        {
+            eprintln!("[rbac_manager] WARNING: Failed to create audit event: {}", e);
+        }
     }
+
+    result
 }
 
 // --- Unit Tests ---
 #[cfg(test)]
 mod tests {
     use super::*;
+    use audit_logger::{PhgitAudit, PhgitAuditSpec};
+    use hyper::http::{Request, Response, Body};
+    use kube::Client;
+    use std::sync::{Arc, Mutex};
+    use tower::{service_fn, Service};
+
+    #[tokio::test]
+    async fn test_handle_grant_creates_binding_and_audit_event() {
+        // --- Setup Mock Server ---
+        let role_binding_request_captured = Arc::new(Mutex::new(None));
+        let audit_request_captured = Arc::new(Mutex::new(None));
+
+        let role_binding_capture = role_binding_request_captured.clone();
+        let audit_capture = audit_request_captured.clone();
+
+        let mock_service = service_fn(move |req: Request<Body>| {
+            let role_binding_capture = role_binding_capture.clone();
+            let audit_capture = audit_capture.clone();
+            async move {
+                let (parts, body) = req.into_parts();
+                let body_bytes = hyper::body::to_bytes(body).await.unwrap();
+                let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+                if parts.uri.path() == "/apis/rbac.authorization.k8s.io/v1/namespaces/default/rolebindings" {
+                    *role_binding_capture.lock().unwrap() = Some(body_str);
+                    let resp = rbac::RoleBinding::default();
+                    let body = Body::from(serde_json::to_string(&resp).unwrap());
+                    Ok(Response::builder().status(201).body(body).unwrap())
+                } else if parts.uri.path() == "/apis/ph.io/v1alpha1/phgitaudits" {
+                    *audit_capture.lock().unwrap() = Some(body_str.clone());
+                    let request_spec: PhgitAuditSpec = serde_json::from_str(&body_str).unwrap();
+                    let resp = PhgitAudit::new("test-audit", request_spec);
+                    let body = Body::from(serde_json::to_string(&resp).unwrap());
+                    Ok(Response::builder().status(201).body(body).unwrap())
+                } else {
+                    panic!("Unexpected request path: {}", parts.uri.path());
+                }
+            }
+        });
+
+        let client = Client::new(mock_service, "default");
+
+        // --- Define Test Payload ---
+        let payload = GrantPayload {
+            role: "promoter".to_string(),
+            subject: "user:test@example.com".to_string(),
+            cluster: "test-cluster".to_string(),
+        };
+
+        // --- Call the Function ---
+        handle_grant(client, payload).await.unwrap();
+
+        // --- Assert RoleBinding Request ---
+        let role_binding_json = role_binding_request_captured.lock().unwrap().clone().unwrap();
+        let created_binding: rbac::RoleBinding = serde_json::from_str(&role_binding_json).unwrap();
+        
+        assert_eq!(created_binding.metadata.name.as_deref(), Some("ph-promoter-user-test-example-com"));
+        assert_eq!(created_binding.role_ref.name, "ph-cluster-promoter");
+        assert_eq!(created_binding.subjects.as_ref().unwrap()[0].name, "test@example.com");
+
+        // --- Assert Audit Event Request ---
+        let audit_json = audit_request_captured.lock().unwrap().clone().unwrap();
+        let created_audit: PhgitAudit = serde_json::from_str(&audit_json).unwrap();
+
+        assert_eq!(created_audit.spec.verb, "grant");
+        assert_eq!(created_audit.spec.component, "rbac_manager");
+        assert_eq!(created_audit.spec.target.as_ref().unwrap().name.as_deref(), Some("test-cluster"));
+        assert_eq!(created_audit.spec.details.get("role").unwrap(), "promoter");
+        assert_eq!(created_audit.spec.details.get("subject").unwrap(), "user:test@example.com");
+    }
 
     #[test]
     fn test_get_subject_parsing() {
