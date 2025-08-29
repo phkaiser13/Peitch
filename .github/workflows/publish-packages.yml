@@ -1,0 +1,123 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Publish to Package Managers
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish-homebrew:
+    name: Publish to Homebrew Tap
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get release version
+        id: get_version
+        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+
+      - name: Download source tarball and get SHA256
+        id: download
+        run: |
+          VERSION=$(echo "${{ steps.get_version.outputs.version }}" | sed 's/v//')
+          TARBALL_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/peitch-source-${VERSION}.tar.gz"
+          echo "Downloading from $TARBALL_URL"
+          
+          curl -L -o source.tar.gz "$TARBALL_URL"
+          
+          SHA256=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "SHA256=$SHA256" >> $GITHUB_OUTPUT
+          echo "TARBALL_URL=$TARBALL_URL" >> $GITHUB_OUTPUT
+
+      - name: Checkout Homebrew tap repository
+        uses: actions/checkout@v4
+        with:
+          # Replace with your Homebrew tap repository, e.g., 'your-user/homebrew-tap'
+          repository: phkaiser13/homebrew-peitch
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }} # A PAT with repo scope
+
+      - name: Update Homebrew formula
+        run: |
+          VERSION=$(echo "${{ steps.get_version.outputs.version }}" | sed 's/v//')
+          # Assuming the formula file is named 'ph.rb' or similar in the tap repo
+          FORMULA_FILE="ph.rb"
+          
+          # Using awk for safer replacement
+          awk -v version="$VERSION" '/version / { $0 = "  version \"" version "\"" } 1' "$FORMULA_FILE" > temp && mv temp "$FORMULA_FILE"
+          awk -v url="${{ steps.download.outputs.TARBALL_URL }}" '/url / { $0 = "  url \"" url "\"" } 1' "$FORMULA_FILE" > temp && mv temp "$FORMULA_FILE"
+          awk -v sha256="${{ steps.download.outputs.SHA256 }}" '/sha256 / { $0 = "  sha256 \"" sha256 "\"" } 1' "$FORMULA_FILE" > temp && mv temp "$FORMULA_FILE"
+
+          echo "--- Updated Formula ---"
+          cat "$FORMULA_FILE"
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .
+          # Check if there are changes to commit
+          if ! git diff --staged --quiet; then
+            git commit -m "Update formula for peitch version ${{ steps.get_version.outputs.version }}"
+            git push
+          else
+            echo "No changes to commit."
+          fi
+
+  publish-chocolatey:
+    name: Publish to Chocolatey (${{ matrix.arch }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86, arm64]
+
+    steps:
+      - name: Get release version
+        id: get_version
+        run: echo "version=${{ github.event.release.tag_name }}" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Download Windows Installer and get SHA256
+        id: download
+        shell: pwsh
+        run: |
+          $VERSION = "${{ steps.get_version.outputs.version }}" -replace 'v',''
+          $INSTALLER_FILENAME = "ph-installer-${{ matrix.arch }}.exe"
+          $INSTALLER_URL = "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/$INSTALLER_FILENAME"
+          echo "Downloading from $INSTALLER_URL"
+          
+          Invoke-WebRequest -Uri $INSTALLER_URL -OutFile $INSTALLER_FILENAME
+          
+          $SHA256 = (Get-FileHash -Path $INSTALLER_FILENAME -Algorithm SHA256).Hash.ToLower()
+          echo "SHA256=$SHA256" >> $env:GITHUB_OUTPUT
+          echo "INSTALLER_FILENAME=$INSTALLER_FILENAME" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout main repository
+        uses: actions/checkout@v4
+
+      - name: Prepare Chocolatey package
+        shell: pwsh
+        run: |
+          $VERSION = "${{ steps.get_version.outputs.version }}" -replace 'v',''
+          cd packaging/chocolatey
+          
+          # Update ph.nuspec
+          (Get-Content -Path ph.nuspec -Raw) -replace '<version>k8s-prerls-0.0.3-beta</version>', "<version>$VERSION</version>" | Set-Content -Path ph.nuspec
+          
+          # Update tools/chocolateyinstall.ps1
+          $installScript = Get-Content -Path tools/chocolateyinstall.ps1 -Raw
+          $installScript = $installScript -replace "version = 'k8s-prerls-0.0.3-beta'", "version = '$VERSION'"
+          $installScript = $installScript -replace "checksum = ''", "checksum = '${{ steps.download.outputs.SHA256 }}'"
+          # Also update the installer URL to be arch-specific
+          $installScript = $installScript -replace 'ph-installer.exe', '${{ steps.download.outputs.INSTALLER_FILENAME }}'
+          Set-Content -Path tools/chocolateyinstall.ps1 -Value $installScript
+          
+          echo "--- ph.nuspec ---"
+          cat ph.nuspec
+          echo "--- chocolateyinstall.ps1 ---"
+          cat tools/chocolateyinstall.ps1
+
+      - name: Pack and Publish Chocolatey package
+        shell: pwsh
+        run: |
+          cd packaging/chocolatey
+          choco pack
+          choco push *.nupkg --key ${{ secrets.CHOCO_API_KEY }} --source https://push.chocolatey.org/

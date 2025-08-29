@@ -4,93 +4,172 @@ name: Peitch Cross-Platform Build
 on:
   push:
     branches: [ "main" ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
-  build-linux-cross:
-    name: Build Linux (${{ matrix.arch }})
+  prepare-source-artifacts:
+    name: Prepare Source Artifacts
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: aarch64
-            image: linux-arm64
-            rust_target: aarch64-unknown-linux-gnu
-          - arch: armv7
-            image: linux-armv7
-            rust_target: armv7-unknown-linux-gnueabihf
-          - arch: i686
-            image: linux-x86
-            rust_target: i686-unknown-linux-gnu
-          - arch: ppc64le
-            image: linux-ppc64le
-            rust_target: powerpc64le-unknown-linux-gnu
-          - arch: riscv64
-            image: linux-riscv64
-            rust_target: riscv64gc-unknown-linux-gnu
-          - arch: s390x
-            image: linux-s390x
-            rust_target: s390x-unknown-linux-gnu
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build with dockcross for ${{ matrix.arch }}
-        uses: docker://dockcross/${{ matrix.image }}
-        with:
-          args: >
-            bash -c '
-              set -e
-              
-              echo "--- Installing build dependencies for ${{ matrix.arch }} ---"
-              export DEBIAN_FRONTEND=noninteractive
-              apt-get -qq update
-              apt-get -qq install -y \
-                build-essential \
-                libssl-dev \
-                pkg-config \
-                liblua5.4-dev \
-                libcurl4-openssl-dev \
-                nlohmann-json3-dev \
-                curl \
-                ca-certificates
+      - name: Get version from tag
+        id: get_version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-              echo "--- Installing Rust ---"
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-              source "$HOME/.cargo/env"
+      - name: Create source tarball and zip
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tar -czf "peitch-source-${{ steps.get_version.outputs.version }}.tar.gz" --exclude=".git" .
+          zip -r "peitch-source-${{ steps.get_version.outputs.version }}.zip" . -x ".git/*"
 
-              echo "--- Adding Rust target for ${{ matrix.arch }} ---"
-              rustup target add ${{ matrix.rust_target }}
-
-              echo "--- Configuring CMake ---"
-              cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-
-              echo "--- Compiling Project ---"
-              cmake --build build --parallel
-
-              echo "--- Packaging Artifacts ---"
-              mkdir -p /work/release
-              tar -czvf /work/release/ph-linux-${{ matrix.arch }}.tar.gz -C build/bin .
-
-              echo "--- Build complete for ${{ matrix.arch }} ---"
-            '
-      - name: Upload Build Artifact
+      - name: Upload Source Artifacts
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
-          name: ph-linux-${{ matrix.arch }}
-          path: release/ph-linux-${{ matrix.arch }}.tar.gz
+          name: source-artifacts
+          path: |
+            *.tar.gz
+            *.zip
           retention-days: 5
 
-  build-windows-arm64:
-    name: Build Windows (ARM64)
+  package-debian-amd64:
+    name: Package Debian (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            pkg-config \
+            libcurl4-openssl-dev \
+            liblua5.4-dev \
+            nlohmann-json3-dev \
+            libssl-dev \
+            devscripts \
+            debhelper
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build Debian package
+        run: |
+          # The -b flag creates a binary-only package
+          # The -uc and -us flags prevent signing the package, which is not needed here
+          dpkg-buildpackage --build=binary --no-sign
+      
+      - name: Rename package to include architecture
+        run: |
+          mkdir -p artifacts
+          for file in ../*.deb; do
+            # The output of dpkg-buildpackage is in the parent directory
+            mv "$file" "artifacts/$(basename "$file" .deb)_amd64.deb"
+          done
+
+      - name: Upload Debian Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package-amd64
+          path: artifacts/*.deb
+          retention-days: 5
+
+  package-rpm-x86_64:
+    name: Package RPM (x86_64)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo dnf install -y \
+            gcc-c++ \
+            cmake \
+            lua-devel \
+            libcurl-devel \
+            nlohmann-json-devel \
+            openssl-devel \
+            rust \
+            cargo \
+            rpm-build \
+            tar \
+            git
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create source tarball
+        run: |
+          tar -czf "peitch-${{ steps.get_version.outputs.version }}.tar.gz" \
+            --exclude=".git" \
+            --transform="s/^\./peitch-${{ steps.get_version.outputs.version }}/" \
+            .
+
+      - name: Build RPM package
+        run: |
+          # Set up RPM build directories
+          rpmdev-setuptree
+          
+          # Copy source tarball to SOURCES
+          cp peitch-*.tar.gz ~/rpmbuild/SOURCES/
+          
+          # Copy spec file
+          cp packaging/rpm/ph.spec ~/rpmbuild/SPECS/
+          
+          # Replace placeholder version in spec file
+          sed -i 's/Version:    k8s-prerls-0.0.3-beta/Version:    ${{ steps.get_version.outputs.version }}/' ~/rpmbuild/SPECS/ph.spec
+          
+          # Build the RPM
+          rpmbuild -bb ~/rpmbuild/SPECS/ph.spec
+
+      - name: Rename package to include architecture
+        run: |
+          mkdir -p artifacts
+          find ~/rpmbuild/RPMS -name "*.rpm" -exec mv {} "artifacts/$(basename {} .rpm)-x86_64.rpm" \;
+
+      - name: Upload RPM Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package-x86_64
+          path: artifacts/*.rpm
+          retention-days: 5
+
+  package-windows:
+    name: Package Windows (${{ matrix.arch }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            platform: x64
+            vcpkg_triplet: x64-windows
+            rust_target: x86_64-pc-windows-msvc
+          - arch: x86
+            platform: Win32
+            vcpkg_triplet: x86-windows
+            rust_target: i686-pc-windows-msvc
+          - arch: arm64
+            platform: ARM64
+            vcpkg_triplet: arm64-windows
+            rust_target: aarch64-pc-windows-msvc
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-      VCPKG_DEFAULT_TRIPLET: arm64-windows
 
     steps:
       - name: Checkout repository
@@ -100,90 +179,299 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-          target: aarch64-pc-windows-msvc
+          target: ${{ matrix.rust_target }}
 
       - name: Install vcpkg and dependencies
+        shell: pwsh
         run: |
           git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
           cd $env:VCPKG_ROOT
           .\bootstrap-vcpkg.bat
-          .\vcpkg.exe install curl lua nlohmann-json --triplet arm64-windows
+          .\vcpkg.exe install curl lua nlohmann-json --triplet ${{ matrix.vcpkg_triplet }}
+
+      - name: Configure CMake
         shell: pwsh
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" -A ${{ matrix.platform }} `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Project
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
+
+      - name: Copy Runtime DLLs
+        shell: pwsh
+        run: |
+          $vcpkgBinDir = "$env:VCPKG_ROOT/installed/${{ matrix.vcpkg_triplet }}/bin"
+          $targetBinDir = "build/bin/Release"
+          Get-ChildItem -Path $vcpkgBinDir -Filter "*.dll" | Copy-Item -Destination $targetBinDir -Force
+      
+      - name: Get version from tag
+        id: get_version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Package with NSIS
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $buildDir = "build/bin/Release"
+          
+          # Copy NSIS script and assets to the build directory
+          Copy-Item -Path "packaging/nsis/ph.nsi" -Destination $buildDir
+          Copy-Item -Path "LICENSE" -Destination "$buildDir/LICENSE.txt"
+          # Add other assets like icons if needed
+          
+          cd $buildDir
+          
+          # Replace version placeholder
+          $nsiContent = Get-Content -Path "ph.nsi" -Raw
+          $nsiContent = $nsiContent -replace '@ph_VERSION@', '${{ steps.get_version.outputs.version }}'
+          Set-Content -Path "ph.nsi" -Value $nsiContent
+          
+          # Install NSIS and run it
+          choco install nsis -y
+          makensis ph.nsi
+          
+          # Move installer to a common artifacts directory
+          mkdir -p ../../../artifacts
+          Move-Item -Path "ph-${{ steps.get_version.outputs.version }}-installer.exe" -Destination "../../../artifacts/ph-installer-${{ matrix.arch }}.exe"
+
+      - name: Upload Installer Artifact
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-${{ matrix.arch }}
+          path: artifacts/ph-installer-${{ matrix.arch }}.exe
+          retention-days: 5
+
+  package-macos:
+    name: Package macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: macos-12 # Intel
+            rust_target: x86_64-apple-darwin
+          - arch: arm64
+            os: macos-14 # Apple Silicon
+            rust_target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Homebrew dependencies
+        run: |
+          brew install cmake pkg-config curl lua nlohmann-json openssl
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.rust_target }}
 
       - name: Configure CMake
         run: |
-          cmake -S . -B build `
-            -G "Visual Studio 17 2022" -A ARM64 `
-            -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake" `
-            -DCMAKE_BUILD_TYPE=Release
-        shell: pwsh
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build Project
-        run: cmake --build build --config Release --parallel
-        shell: pwsh
-      
-      - name: Copy Runtime DLLs
         run: |
-          $vcpkgBinDir = "${{ env.VCPKG_ROOT }}/installed/arm64-windows/bin"
-          $targetBinDir = "build/bin/Release"
-          Get-ChildItem -Path $vcpkgBinDir -Filter "*.dll" | Copy-Item -Destination $targetBinDir -Force
-        shell: pwsh
+          cmake --build build --parallel $(sysctl -n hw.ncpu)
 
-      - name: Package Artifacts
+      - name: Get version from tag
+        id: get_version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Package into DMG
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
-          $releaseDir = "release"
-          $buildBinDir = "build/bin/Release"
-          New-Item -ItemType Directory -Force -Path $releaseDir
-          Compress-Archive -Path "$buildBinDir/*" -DestinationPath "$releaseDir/ph-windows-arm64.zip"
-        shell: pwsh
+          # Create a simple DMG containing just the binary
+          mkdir -p staging
+          cp build/bin/ph staging/
+          
+          hdiutil create -volname "ph-${{ steps.get_version.outputs.version }}" -srcfolder staging -ov -format UDZO "ph-macos-${{ matrix.arch }}.dmg"
+          
+          mkdir -p artifacts
+          mv *.dmg artifacts/
 
-      - name: Upload Build Artifact
+      - name: Upload DMG Artifact
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
-          name: ph-windows-arm64
-          path: release/ph-windows-arm64.zip
+          name: macos-installer-${{ matrix.arch }}
+          path: artifacts/*.dmg
           retention-days: 5
 
-  build-freebsd:
-    name: Build FreeBSD (x86_64)
+  package-arch-x86_64:
+    name: Package Arch Linux (x86_64)
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel \
+            cmake \
+            curl \
+            git \
+            lua \
+            nlohmann-json \
+            pkgconf \
+            rust
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Prepare packaging files
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          # Create source tarball that PKGBUILD expects
+          tar -czf "peitch-${{ steps.get_version.outputs.version }}.tar.gz" \
+            --exclude=".git" \
+            --transform="s/^\./peitch-${{ steps.get_version.outputs.version }}/" \
+            .
+            
+          # Calculate SHA256 sum
+          SHA256=$(sha256sum peitch-*.tar.gz | cut -d' ' -f1)
+          echo "SHA256 is $SHA256"
+          
+          # Prepare PKGBUILD
+          cp templates/Extern-pkgs/aur/PKGBUILD.template PKGBUILD
+          sed -i "s/@ph_VERSION@/${{ steps.get_version.outputs.version }}/g" PKGBUILD
+          sed -i "s/@ph_SHA256@/$SHA256/g" PKGBUILD
+          
+          echo "--- PKGBUILD Content ---"
+          cat PKGBUILD
+
+      - name: Build Arch package
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          # Run makepkg as a non-root user
+          # Create a builder user
+          useradd -m builder
+          chown -R builder:builder .
+          
+          # Run makepkg
+          sudo -u builder makepkg --noconfirm -sf
+          
+      - name: Upload Arch Package
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package-x86_64
+          path: "*.pkg.tar.zst"
+          retention-days: 5
+
+  package-freebsd:
+    name: Package FreeBSD (x86_64)
     runs-on: macos-12 # Required by the vmactions/freebsd-vm action
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build on FreeBSD
+      - name: Get version from tag
+        id: get_version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and Package on FreeBSD
         uses: vmactions/freebsd-vm@v1
         with:
           usesh: true
           mem: 4096
           run: |
+            set -e
             echo "--- Installing dependencies on FreeBSD ---"
-            pkg install -y \
-              bash \
-              cmake \
-              curl \
-              git \
-              lua54 \
-              nlohmann-json \
-              pkgconf \
-              rust
+            pkg install -y bash cmake curl git lua54 nlohmann-json pkgconf rust
             
-            echo "--- Configuring CMake ---"
-            # The code is already checked out in the workspace
+            echo "--- Compiling Project ---"
             cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
               -DLUA_INCLUDE_DIR=/usr/local/include/lua54 \
               -DLUA_LIBRARY=/usr/local/lib/liblua-5.4.so
-
-            echo "--- Compiling Project ---"
             cmake --build build --parallel
 
-            echo "--- Packaging Artifacts ---"
-            mkdir -p release
-            tar -czvf release/ph-freebsd-x86_64.tar.gz -C build/bin .
+            echo "--- Creating FreeBSD package ---"
+            STAGING_DIR=$(mktemp -d)
+            mkdir -p "$STAGING_DIR/usr/local/bin"
+            cp build/bin/ph "$STAGING_DIR/usr/local/bin/"
 
-      - name: Upload Build Artifact
+            # Create the package manifest
+            cat << EOF > "$STAGING_DIR/+MANIFEST"
+            {
+              "name": "ph",
+              "version": "${{ steps.get_version.outputs.version }}",
+              "origin": "sysutils/ph",
+              "comment": "The Polyglot Assistant for Git & DevOps Workflows",
+              "arch": "freebsd:13:x86:64",
+              "www": "https://github.com/phkaiser13/peitch",
+              "maintainer": "you@example.com",
+              "prefix": "/usr/local",
+              "licenselogic": "single",
+              "licenses": ["Apache-2.0"],
+              "deps": {
+                "curl": { "origin": "ftp/curl", "version": "*" },
+                "lua54": { "origin": "lang/lua54", "version": "*" }
+              },
+              "files": {
+                "/usr/local/bin/ph": ""
+              }
+            }
+            EOF
+            
+            pkg create -m "$STAGING_DIR/" -r "$STAGING_DIR/" -o .
+            mkdir release
+            mv *.pkg release/
+
+      - name: Upload Package Artifact
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
-          name: ph-freebsd-x86_64
-          path: release/ph-freebsd-x86_64.tar.gz
+          name: freebsd-package-x86_64
+          path: release/*.pkg
           retention-days: 5
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [prepare-source-artifacts, package-debian-amd64, package-rpm-x86_64, package-windows, package-macos, package-arch-x86_64, package-freebsd]
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: ls -R artifacts/
+
+      - name: Generate SBOMs for artifacts
+        uses: anchore/syft-action@v0
+        with:
+          path: artifacts/
+          format: spdx-json
+          output: sbom.json # This will generate multiple files, one for each artifact
+
+      - name: List all files before release
+        run: ls -R .
+
+      - name: Create Release and Upload Artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*
+            *.spdx.json
+          fail_on_unmatched_files: true

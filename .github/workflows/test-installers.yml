@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Test Published Installers
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  test-on-platform:
+    name: Test on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_glob: "*.deb"
+            install_command: |
+              sudo dpkg -i ./*.deb
+              sudo apt-get install -f -y
+            test_command: "ph --version"
+          - os: windows-latest
+            asset_glob: "*-x64.exe"
+            install_command: |
+              Start-Process -FilePath ".\ph-installer-x64.exe" -ArgumentList "/S" -Wait
+            test_command: "& 'C:\Program Files\ph\bin\ph.exe' --version"
+          - os: macos-latest
+            asset_glob: "*.dmg"
+            install_command: |
+              hdiutil attach ./*.dmg
+              sudo cp /Volumes/ph-*/ph /usr/local/bin/ph
+              hdiutil detach /Volumes/ph-*
+            test_command: "ph --version"
+          - os: freebsd
+            asset_glob: "*.pkg"
+            # We need to run the test inside the VM action
+            install_command: "echo 'Skipping direct install step'"
+            test_command: "echo 'Skipping direct test step'"
+
+    runs-on: ${{ matrix.os == 'freebsd' && 'macos-12' || matrix.os }}
+    steps:
+      - name: Get release version
+        id: get_version
+        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Download release installer
+        run: |
+          gh release download ${{ steps.get_version.outputs.version }} --pattern "${{ matrix.asset_glob }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List downloaded files
+        run: ls -l
+
+      - name: Install and Verify (non-FreeBSD)
+        if: matrix.os != 'freebsd'
+        run: |
+          ${{ matrix.install_command }}
+          ${{ matrix.test_command }}
+        shell: ${{ matrix.os == 'windows-latest' && 'pwsh' || 'bash' }}
+
+      - name: Install and Verify on FreeBSD
+        if: matrix.os == 'freebsd'
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          mem: 4096
+          run: |
+            set -e
+            echo "--- Installing package on FreeBSD ---"
+            # The downloaded .pkg file is available in the workspace
+            pkg install -y ./*.pkg
+            
+            echo "--- Verifying installation ---"
+            ph --version
