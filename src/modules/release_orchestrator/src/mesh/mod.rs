@@ -1,65 +1,45 @@
-/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+/*
+* Copyright (C) 2025 Pedro Henrique / phkaiser13
+*
 * File: src/modules/release_orchestrator/src/mesh/mod.rs
-* This file defines the abstraction layer for interacting with various service
-* meshes. It establishes a common `ServiceMeshClient` trait (interface) that
-* decouples the high-level release strategies from the low-level, mesh-specific
-* implementation details. This design makes the system highly extensible,
-* allowing for new service meshes to be supported by simply providing a new
-* implementation of the trait.
-* SPDX-License-Identifier: Apache-2.0 */
+*
+* This module provides a unified interface for interacting with different
+* traffic management systems, including service meshes (like Istio, Linkerd)
+* and dedicated controllers like Argo Rollouts. It abstracts away the specific
+* details of how each system handles traffic splitting, promotion, and rollbacks,
+* allowing the release_controller to work with a generic `TrafficManagerClient`.
+*
+* The goal is to make the traffic management logic pluggable. New systems
+* can be supported by adding a new client that implements the `TrafficManagerClient` trait.
+*
+* SPDX-License-Identifier: Apache-2.0
+*/
 
-// Declare the specific mesh implementation modules.
+use anyhow::Result;
+use async_trait::async_trait;
+
+pub mod argo;
 pub mod istio;
 pub mod linkerd;
 
-use crate::config::ServiceMesh;
-use anyhow::{anyhow, Result};
-use async_trait::async_trait;
-use kube::Client;
-
-/// Represents a desired traffic distribution for a specific application.
-/// The weights should sum to 100.
+/// Represents a desired traffic split configuration.
 pub struct TrafficSplit {
-    /// The name of the application service.
+    /// The name of the application or service being targeted.
     pub app_name: String,
-    /// A vector of (version_subset, weight) tuples.
+    /// A list of service versions and their corresponding traffic weights.
+    /// e.g., `[("stable", 90), ("canary", 10)]`
     pub weights: Vec<(String, u8)>,
 }
 
-/// A trait defining the common interface for interacting with a service mesh.
-/// Any supported service mesh must implement this trait.
+/// A generic trait for clients that can manage progressive delivery.
 #[async_trait]
-pub trait ServiceMeshClient {
-    /// Updates the traffic routing rules in the service mesh to match the
-    /// desired traffic split. This is the core operation for canary and
-    /// blue-green deployments.
-    ///
-    /// # Arguments
-    /// * `namespace` - The Kubernetes namespace of the resources.
-    /// * `split` - The desired `TrafficSplit` configuration.
-    async fn update_traffic_split(&self, namespace: &str, split: TrafficSplit) -> Result<()>;
-}
+pub trait TrafficManagerClient {
+    /// Updates the traffic management configuration to apply the given traffic split.
+    async fn update_traffic_split(&self, ns: &str, split: TrafficSplit) -> Result<()>;
 
-/// Factory function to get a concrete implementation of the `ServiceMeshClient`.
-///
-/// Based on the configuration, this function returns a boxed trait object that
-/// can be used by the strategy logic without needing to know the concrete type.
-///
-/// # Arguments
-/// * `mesh_type` - The `ServiceMesh` enum variant from the configuration.
-/// * `client` - The shared Kubernetes `Client`.
-pub fn get_mesh_client(
-    mesh_type: ServiceMesh,
-    client: Client,
-) -> Result<Box<dyn ServiceMeshClient + Send + Sync>> {
-    match mesh_type {
-        ServiceMesh::Istio => Ok(Box::new(istio::IstioClient::new(client))),
-        ServiceMesh::Linkerd => Ok(Box::new(linkerd::LinkerdClient::new(client))), // <-- UPDATED
-        ServiceMesh::Traefik => {
-            // When Traefik support is added, its client will be instantiated here.
-            Err(anyhow!(
-                "Traefik is not yet supported by the release orchestrator."
-            ))
-        }
-    }
+    /// Promotes a release, typically shifting 100% of traffic to the new version.
+    async fn promote(&self, ns: &str, app_name: &str) -> Result<()>;
+
+    /// Rolls back a release, shifting 100% of traffic to the stable version.
+    async fn rollback(&self, ns: &str, app_name: &str) -> Result<()>;
 }

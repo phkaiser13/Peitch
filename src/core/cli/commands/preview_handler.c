@@ -112,6 +112,10 @@ static phStatus handle_preview_create_command(int argc, const char** argv) {
     const char* image = NULL;
     const char* commit_sha = NULL;
     const char* ttl_str = NULL;
+    const char* db_snapshot = NULL;
+    bool anonymize_db = false;
+    const char* env_file = NULL;
+
 
     for (int i = 0; i < argc; ++i) {
         if (strcmp(argv[i], "--pr") == 0 && i + 1 < argc) pr_str = argv[++i];
@@ -119,6 +123,9 @@ static phStatus handle_preview_create_command(int argc, const char** argv) {
         else if (strcmp(argv[i], "--image") == 0 && i + 1 < argc) image = argv[++i];
         else if (strcmp(argv[i], "--ttl") == 0 && i + 1 < argc) ttl_str = argv[++i];
         else if (strcmp(argv[i], "--commit-sha") == 0 && i + 1 < argc) commit_sha = argv[++i];
+        else if (strcmp(argv[i], "--db-snapshot") == 0 && i + 1 < argc) db_snapshot = argv[++i];
+        else if (strcmp(argv[i], "--anonymize-db") == 0) anonymize_db = true;
+        else if (strcmp(argv[i], "--env-file") == 0 && i + 1 < argc) env_file = argv[++i];
     }
 
     if (!pr_str || !repo_url) {
@@ -155,6 +162,18 @@ static phStatus handle_preview_create_command(int argc, const char** argv) {
     if (ttl_str) {
         long ttl_hours = strtol(ttl_str, NULL, 10);
         ptr += snprintf(ptr, end - ptr, ",\"new_ttl\":%ld", ttl_hours);
+    }
+
+    if (db_snapshot) {
+        ptr += snprintf(ptr, end - ptr, ",\"db_snapshot\":\"%s\"", db_snapshot);
+    }
+
+    if (anonymize_db) {
+        ptr += snprintf(ptr, end - ptr, ",\"anonymize_db\":true");
+    }
+
+    if (env_file) {
+        ptr += snprintf(ptr, end - ptr, ",\"env_file\":\"%s\"", env_file);
     }
 
     // --- OpenTelemetry: Inject Context ---

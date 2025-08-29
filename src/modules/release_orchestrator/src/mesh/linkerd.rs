@@ -7,7 +7,7 @@
 * working with community-standard APIs.
 * SPDX-License-Identifier: Apache-2.0 */
 
-use super::{ServiceMeshClient, TrafficSplit as InternalTrafficSplit};
+use super::{TrafficManagerClient, TrafficSplit as InternalTrafficSplit};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use kube::{
@@ -59,7 +59,7 @@ impl LinkerdClient {
 }
 
 #[async_trait]
-impl ServiceMeshClient for LinkerdClient {
+impl TrafficManagerClient for LinkerdClient {
     /// Updates SMI TrafficSplit rules to match the desired traffic distribution.
     async fn update_traffic_split(
         &self,
@@ -108,5 +108,31 @@ impl ServiceMeshClient for LinkerdClient {
 
         println!("Successfully applied SMI TrafficSplit for '{}'.", resource_name);
         Ok(())
+    }
+
+    /// Promotes a release by shifting 100% of traffic to the "canary" backend.
+    async fn promote(&self, ns: &str, app_name: &str) -> Result<()> {
+        println!("Promoting release for '{}' in namespace '{}' via Linkerd/SMI", app_name, ns);
+        let split = InternalTrafficSplit {
+            app_name: app_name.to_string(),
+            weights: vec![
+                ("stable".to_string(), 0),
+                ("canary".to_string(), 100),
+            ],
+        };
+        self.update_traffic_split(ns, split).await
+    }
+
+    /// Rolls back a release by shifting 100% of traffic to the "stable" backend.
+    async fn rollback(&self, ns: &str, app_name: &str) -> Result<()> {
+        println!("Rolling back release for '{}' in namespace '{}' via Linkerd/SMI", app_name, ns);
+        let split = InternalTrafficSplit {
+            app_name: app_name.to_string(),
+            weights: vec![
+                ("stable".to_string(), 100),
+                ("canary".to_string(), 0),
+            ],
+        };
+        self.update_traffic_split(ns, split).await
     }
 }

@@ -7,7 +7,7 @@
 * for canary and blue-green deployments.
 * SPDX-License-Identifier: Apache-2.0 */
 
-use super::{ServiceMeshClient, TrafficSplit};
+use super::{TrafficManagerClient, TrafficSplit};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use kube::{
@@ -156,7 +156,7 @@ impl IstioClient {
 }
 
 #[async_trait]
-impl ServiceMeshClient for IstioClient {
+impl TrafficManagerClient for IstioClient {
     /// Updates Istio routing rules to match the desired traffic split.
     async fn update_traffic_split(&self, namespace: &str, split: TrafficSplit) -> Result<()> {
         println!(
@@ -173,5 +173,31 @@ impl ServiceMeshClient for IstioClient {
         println!("Successfully applied VirtualService to shift traffic.");
 
         Ok(())
+    }
+
+    /// Promotes a release by shifting 100% of traffic to the "canary" subset.
+    async fn promote(&self, ns: &str, app_name: &str) -> Result<()> {
+        println!("Promoting release for '{}' in namespace '{}' via Istio", app_name, ns);
+        let split = TrafficSplit {
+            app_name: app_name.to_string(),
+            weights: vec![
+                ("stable".to_string(), 0),
+                ("canary".to_string(), 100),
+            ],
+        };
+        self.update_traffic_split(ns, split).await
+    }
+
+    /// Rolls back a release by shifting 100% of traffic to the "stable" subset.
+    async fn rollback(&self, ns: &str, app_name: &str) -> Result<()> {
+        println!("Rolling back release for '{}' in namespace '{}' via Istio", app_name, ns);
+        let split = TrafficSplit {
+            app_name: app_name.to_string(),
+            weights: vec![
+                ("stable".to_string(), 100),
+                ("canary".to_string(), 0),
+            ],
+        };
+        self.update_traffic_split(ns, split).await
     }
 }

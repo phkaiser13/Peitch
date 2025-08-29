@@ -47,7 +47,7 @@
 */
 
 use crate::crds::{phRelease, phReleaseStatus, AnalysisRunStatus, ReleasePhase, StrategyType};
-use crate::mesh::{self, ServiceMeshClient, TrafficSplit as MeshTrafficSplit};
+use crate::mesh::{self, TrafficManagerClient, TrafficSplit as MeshTrafficSplit};
 use crate::metrics;
 use crate::metrics_analyzer::{AnalysisResult, PrometheusClient};
 use anyhow::{anyhow, Result};
@@ -458,8 +458,8 @@ async fn initial_setup(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Act
 
     // Traffic Splitting Logic
     let traffic_percent = canary_strategy.traffic_percent;
-    if let Some(mesh_client) = get_service_mesh_client(client.clone()).await? {
-        println!("Service mesh detected. Shifting traffic via mesh.");
+    if let Some(mesh_client) = get_traffic_manager_client(client.clone()).await? {
+        println!("Traffic manager detected. Shifting traffic via mesh/controller.");
         let split = MeshTrafficSplit {
             app_name: app_name.clone(),
             weights: vec![
@@ -509,17 +509,9 @@ async fn promote_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<A
     let app_name = &spec.app_name;
     println!("Promoting canary '{}' to stable for release '{}'", spec.version, release.name_any());
 
-    if let Some(mesh_client) = get_service_mesh_client(client.clone()).await? {
-        println!("Service mesh detected. Promoting via mesh.");
-        let split = MeshTrafficSplit {
-            app_name: app_name.clone(),
-            weights: vec![("stable".to_string(), 0), ("canary".to_string(), 100)],
-        };
-        mesh_client.update_traffic_split(ns, split).await?;
-
-        // After promotion, the canary logic should take over and replace stable.
-        // For now, we just shift traffic. A full implementation would update the
-        // stable deployment with the canary image and then reset the traffic split.
+    if let Some(traffic_manager) = get_traffic_manager_client(client.clone()).await? {
+        println!("Traffic manager detected. Promoting via client.");
+        traffic_manager.promote(ns, app_name).await?;
     } else {
         println!("No service mesh detected. Promoting via replica scaling.");
         let patch_params = PatchParams::apply("ph-release-controller");
@@ -560,13 +552,9 @@ async fn rollback_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<
     let app_name = &spec.app_name;
     println!("Rolling back canary for release '{}'", release.name_any());
 
-    if let Some(mesh_client) = get_service_mesh_client(client.clone()).await? {
-        println!("Service mesh detected. Rolling back via mesh.");
-        let split = MeshTrafficSplit {
-            app_name: app_name.clone(),
-            weights: vec![("stable".to_string(), 100), ("canary".to_string(), 0)],
-        };
-        mesh_client.update_traffic_split(ns, split).await?;
+    if let Some(traffic_manager) = get_traffic_manager_client(client.clone()).await? {
+        println!("Traffic manager detected. Rolling back via client.");
+        traffic_manager.rollback(ns, app_name).await?;
     } else {
         println!("No service mesh detected. Rolling back via replica scaling.");
         let patch_params = PatchParams::apply("ph-release-controller");
@@ -643,11 +631,18 @@ pub async fn on_error(release: Arc<phRelease>, error: &Error, ctx: Arc<Context>)
     Action::requeue(requeue_duration)
 }
 
-/// Detects which service mesh is active by checking for installed CRDs and returns a client for it.
-async fn get_service_mesh_client(
+/// Detects which traffic management tool (service mesh or Argo Rollouts) is active
+/// by checking for installed CRDs and returns a suitable client.
+async fn get_traffic_manager_client(
     client: Client,
-) -> Result<Option<Box<dyn ServiceMeshClient + Send + Sync>>, Error> {
+) -> Result<Option<Box<dyn TrafficManagerClient + Send + Sync>>, Error> {
     let crd_api: Api<CustomResourceDefinition> = Api::all(client.clone());
+
+    // Check for Argo Rollouts' Rollout CRD first, as it's a higher-level controller.
+    if crd_api.get("rollouts.argoproj.io").await.is_ok() {
+        println!("Argo Rollouts CRD found. Using Argo Rollouts client.");
+        return Ok(Some(Box::new(mesh::argo::ArgoRolloutsClient::new(client))));
+    }
 
     // Check for Istio's VirtualService CRD
     if crd_api
@@ -669,7 +664,7 @@ async fn get_service_mesh_client(
         return Ok(Some(Box::new(mesh::linkerd::LinkerdClient::new(client))));
     }
 
-    println!("No supported service mesh CRD found. Falling back to deployment scaling.");
+    println!("No supported traffic management tool found. Falling back to direct deployment scaling.");
     Ok(None)
 }
 
