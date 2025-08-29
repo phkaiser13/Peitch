@@ -1,0 +1,16 @@
+version: "2.1"
+
+jobs:
+  noop:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - run:
+          name: "No operation"
+          command: echo "This job currently does nothing"
+
+workflows:
+  version: "2.1"
+  empty-workflow:
+    jobs:
+      - noop

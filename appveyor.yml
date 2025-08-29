@@ -1,0 +1,14 @@
+version: "2.1"
+jobs:
+  noop:
+    machine: true
+    steps:
+      - run:
+          name: "No operation"
+          command: echo "Voyager Now workflow - currently, nothing to do"
+
+workflows:
+  version: 2
+  empty-workflow:
+    jobs:
+      - noop
