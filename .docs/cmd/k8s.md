@@ -66,8 +66,8 @@ ph kube multi apply --clusters <cluster1,cluster2,...> --path <manifest-path> [-
 
 ### 1.6. Access Control (RBAC)
 
-  * `ph kube grant --role <role> --subject <user/group> [--cluster <cluster-name>]`: Grants a predefined role to a user or group.
-  * `ph kube revoke --role <role> --subject <user/group> [--cluster <cluster-name>]`: Revokes a role from a user or group.
+  * `ph kube grant --role <role> --subject <user/group> [--cluster <cluster-name>]`: Grants a predefined role to a user or group by creating a declarative `PhgitRbacPolicy` resource. The `rbac-policy-controller` then reconciles this policy into a `RoleBinding` in the cluster.
+  * `ph kube revoke --role <role> --subject <user/group> [--cluster <cluster-name>]`: Revokes a role from a user or group by deleting the corresponding `PhgitRbacPolicy` resource.
 
 ### 1.7. `ph kube failover`
 
@@ -110,58 +110,91 @@ Commands for managing ephemeral preview environments for pull requests.
   * **`phPipeline`**: Provides a declarative, Kubernetes-native way to define entire CI/CD pipelines as code.
   * **`phAutoHealRule`**: Defines an automated healing rule that triggers a runbook in response to a specific alert.
   * **`PhgitDisasterRecovery`**: Orchestrates automated failover between two Kubernetes clusters.
+  * **`PhgitRbacPolicy`**: Provides a declarative way to manage RBAC, making access control policies auditable and GitOps-friendly.
 
   ```mermaid
-graph TD
-    subgraph "ph"
-        A[kube]
-        B[preview]
-        C[health]
-        D[autoheal]
-        E[runners]
-    end
+graph LR
+  %% hubs (passo diagonal) — cada hub será ancorado ao respectivo subgraph
+  PH1["ph\nkube"]
+  PH2["preview"]
+  PH3["health"]
+  PH4["autoheal"]
+  PH5["runners"]
 
-    subgraph "kube"
-        A --> A1[sync]
-        A --> A2[drift]
-        A --> A3[rollout]
-        A --> A4[multi]
-        A --> A5[list-clusters]
-        A --> A6[use-cluster]
-        A --> A7[info]
-        A --> A8[grant]
-        A --> A9[revoke]
-        A --> A10[failover]
-    end
+  %% espaços invisíveis para criar o efeito diagonal
+  PH1 --> i1(( ))
+  i1 --> PH2
+  PH2 --> i2(( ))
+  i2 --> PH3
+  PH3 --> i3(( ))
+  i3 --> PH4
+  PH4 --> i4(( ))
+  i4 --> PH5
 
-    subgraph "rollout"
-        A3 --> A3a[start]
-        A3 --> A3b[status]
-        A3 --> A3c[promote]
-        A3 --> A3d[rollback]
-        A3 --> A3e[plan]
-    end
+  class i1,i2,i3,i4 invisible
+  classDef invisible fill:none,stroke:none,stroke-width:0
 
-    subgraph "preview"
-        B --> B1[create]
-        B --> B2[status]
-        B --> B3[teardown]
-        B --> B4[logs]
-        B --> B5[exec]
-        B --> B6[extend]
-        B --> B7[gc]
-    end
+  %% ancoragens (liga cada hub ao nó raiz do seu subgraph)
+  PH1 --- A
+  PH2 --- B
+  PH3 --- C
+  PH4 --- D
+  PH5 --- E
 
-    subgraph "health"
-        C --> C1[check]
-    end
+  %% ---- subgraphs ----
+  subgraph "kube"
+    direction TB
+    A[kube]
+    A --> A1[sync]
+    A --> A2[drift]
+    A --> A3[rollout]
+    A --> A4[multi]
+    A --> A5[list-clusters]
+    A --> A6[use-cluster]
+    A --> A7[info]
+    A --> A8[grant]
+    A --> A9[revoke]
+    A --> A10[failover]
+  end
 
-    subgraph "autoheal"
-        D --> D1[enable]
-    end
+  subgraph "rollout"
+    direction TB
+    A3 --> A3a[start]
+    A3 --> A3b[status]
+    A3 --> A3c[promote]
+    A3 --> A3d[rollback]
+    A3 --> A3e[plan]
+  end
 
-    subgraph "runners"
-        E --> E1[scale]
-        E --> E2[hpa install]
-    end
+  subgraph "preview"
+    direction TB
+    B[preview]
+    B --> B1[create]
+    B --> B2[status]
+    B --> B3[teardown]
+    B --> B4[logs]
+    B --> B5[exec]
+    B --> B6[extend]
+    B --> B7[gc]
+  end
+
+  subgraph "health"
+    direction TB
+    C[health]
+    C --> C1[check]
+  end
+
+  subgraph "autoheal"
+    direction TB
+    D[autoheal]
+    D --> D1[enable]
+  end
+
+  subgraph "runners"
+    direction TB
+    E[runners]
+    E --> E1[scale]
+    E --> E2[hpa install]
+  end
+
 ```

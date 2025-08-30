@@ -84,13 +84,25 @@ kubectl cluster-info
 # We are testing the CLI's ability to interact with the cluster by calling
 # the Rust FFI functions directly.
 
-# Test Case 3: Successful 'kube rollout start'
-print_header "Testing successful 'kube rollout start'"
+# Test Case 3: Successful 'kube rollout start' with steps
+print_header "Testing successful 'kube rollout start' with steps"
 kubectl create namespace ph-releases || true
-"${ph_BIN}" kube rollout start --type Canary --app my-app --image my-image:v1.0 --skip-sig-check
-kubectl get phgitreleases.ph.io -n ph-releases my-app -o jsonpath='{.spec.artifacts[0].image}' | grep "my-image:v1.0"
-echo "PASS: 'kube rollout start' created the PhgitRelease resource."
-kubectl delete phgitreleases.ph.io -n ph-releases my-app
+"${ph_BIN}" kube rollout start \
+    --type Canary \
+    --app my-app \
+    --image my-image:v1.0 \
+    --steps "10,50" \
+    --metric '{"name":"latency","query":"p99_latency"}' \
+    --analysis-window "1m" \
+    --skip-sig-check
+
+# Verify the created resource
+kubectl get phreleases.ph.io -n ph-releases my-app -o jsonpath='{.spec.version}' | grep "my-image:v1.0"
+kubectl get phreleases.ph.io -n ph-releases my-app -o jsonpath='{.spec.strategy.canary.steps[0].setWeight}' | grep "10"
+kubectl get phreleases.ph.io -n ph-releases my-app -o jsonpath='{.spec.strategy.canary.steps[1].setWeight}' | grep "50"
+kubectl get phreleases.ph.io -n ph-releases my-app -o jsonpath='{.spec.strategy.canary.analysis.metrics[0].name}' | grep "latency"
+echo "PASS: 'kube rollout start' created the PhgitRelease resource with correct steps and analysis."
+kubectl delete phreleases.ph.io -n ph-releases my-app
 
 # Test Case 4: Rollout blocked by signature verification
 print_header "Testing rollout blocked by failed signature verification"
@@ -132,21 +144,20 @@ kubectl wait --for=condition=available --timeout=120s deployment/ph-operator-con
 
 # Test Case 6: Canary Rollback on Failure
 print_header "Testing Canary Rollback on Failure"
-# This test requires a metric that will fail. We'll use a dummy query
-# that returns '0' and a success condition of 'result > 1'.
 cat <<EOF | kubectl apply -f -
 apiVersion: ph.io/v1alpha1
-kind: phRelease
+kind: PhgitRelease
 metadata:
   name: test-rollback
-  namespace: default
+  namespace: ph-releases
 spec:
   appName: failing-app
   version: "v1.0.1"
   strategy:
     type: Canary
     canary:
-      trafficPercent: 50
+      steps:
+        - setWeight: 50
       autoPromote: true
       analysis:
         interval: "5s"
@@ -161,7 +172,7 @@ EOF
 # Wait for the release to fail
 echo "Waiting for the release to enter the 'Failed' phase..."
 for _ in {1..30}; do
-  phase=$(kubectl get phgitrelease/test-rollback -n default -o jsonpath='{.status.phase}' || echo "NotFound")
+  phase=$(kubectl get phreleases.ph.io/test-rollback -n ph-releases -o jsonpath='{.status.phase}' || echo "NotFound")
   if [[ "$phase" == "Failed" ]]; then
     echo "SUCCESS: Release 'test-rollback' entered 'Failed' phase as expected."
     break
@@ -172,19 +183,48 @@ done
 
 if [[ "$phase" != "Failed" ]]; then
   echo "FAIL: Release 'test-rollback' did not enter 'Failed' phase."
-  kubectl get phgitrelease/test-rollback -n default -o yaml
+  kubectl get phreleases.ph.io/test-rollback -n ph-releases -o yaml
   exit 1
 fi
-kubectl delete phgitrelease/test-rollback -n default
+kubectl delete phreleases.ph.io/test-rollback -n ph-releases
+
+# Test Case 6.5: Test 'rollout rollback --to-revision'
+print_header "Testing 'rollout rollback --to-revision'"
+# Create a dummy release to rollback
+cat <<EOF | kubectl apply -f -
+apiVersion: ph.io/v1alpha1
+kind: PhgitRelease
+metadata:
+  name: my-app-to-rollback
+  namespace: ph-releases
+spec:
+  appName: my-app-to-rollback
+  version: "v1.2.0"
+  strategy:
+    type: Canary
+    canary:
+      steps:
+      - setWeight: 100
+status:
+  phase: "Succeeded"
+EOF
+
+# Execute the rollback command
+"${ph_BIN}" kube rollout rollback --id my-app-to-rollback --to-revision 5
+# Verify the status was patched
+kubectl get phreleases.ph.io/my-app-to-rollback -n ph-releases -o jsonpath='{.status.phase}' | grep "RollingBack"
+kubectl get phreleases.ph.io/my-app-to-rollback -n ph-releases -o jsonpath='{.status.rollbackTo}' | grep "5"
+echo "PASS: 'rollout rollback --to-revision' correctly patched the resource status."
+kubectl delete phreleases.ph.io/my-app-to-rollback -n ph-releases
 
 # Test Case 7: Preview Failure on Invalid Image
 print_header "Testing Preview Failure on Invalid Image"
 cat <<EOF | kubectl apply -f -
 apiVersion: ph.io/v1alpha1
-kind: phPreview
+kind: PhgitPreview
 metadata:
   name: test-preview-failure
-  namespace: default
+  namespace: ph-releases
 spec:
   repoUrl: "https://github.com/phkaiser13/peitch-example-app"
   branch: "main"
@@ -196,7 +236,7 @@ EOF
 # We need to wait for the namespace to be created first by the preview controller
 echo "Waiting for preview namespace to be created..."
 for _ in {1..15}; do
-  ns=$(kubectl get phpreview/test-preview-failure -n default -o jsonpath='{.status.namespace}')
+  ns=$(kubectl get phgitpreviews.ph.io/test-preview-failure -n ph-releases -o jsonpath='{.status.namespace}')
   if [[ -n "$ns" ]]; then
     echo "Preview namespace '$ns' found."
     break
@@ -213,8 +253,8 @@ kubectl patch deployment/invalid-image-app -n "$ns" -p '{"spec":{"template":{"sp
 
 echo "Waiting for preview to enter 'Failed' state due to ImagePullBackOff..."
 for _ in {1..30}; do
-  status_type=$(kubectl get phpreview/test-preview-failure -n default -o jsonpath='{.status.conditions[-1:].type}')
-  status_msg=$(kubectl get phpreview/test-preview-failure -n default -o jsonpath='{.status.conditions[-1:].message}')
+  status_type=$(kubectl get phgitpreviews.ph.io/test-preview-failure -n ph-releases -o jsonpath='{.status.conditions[-1:].type}')
+  status_msg=$(kubectl get phgitpreviews.ph.io/test-preview-failure -n ph-releases -o jsonpath='{.status.conditions[-1:].message}')
   if [[ "$status_type" == "Failed" && "$status_msg" == *"ImagePullBackOff"* ]]; then
     echo "SUCCESS: Preview 'test-preview-failure' failed with ImagePullBackOff as expected."
     break
@@ -225,12 +265,12 @@ done
 
 if [[ "$status_type" != "Failed" ]]; then
   echo "FAIL: Preview did not enter 'Failed' state as expected."
-  kubectl get phpreview/test-preview-failure -n default -o yaml
+  kubectl get phgitpreviews.ph.io/test-preview-failure -n ph-releases -o yaml
   kubectl get pods -n "$ns"
   kubectl describe pod -l app=invalid-image-app -n "$ns"
   exit 1
 fi
-kubectl delete phpreview/test-preview-failure -n default
+kubectl delete phgitpreviews.ph.io/test-preview-failure -n ph-releases
 
 
 # --- Final success message ---

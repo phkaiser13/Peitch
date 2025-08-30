@@ -499,11 +499,16 @@ static phStatus handle_rollout_command(int argc, const char** argv) {
 
     } else if (strcmp(action, "promote") == 0 || strcmp(action, "rollback") == 0) {
         const char* id = NULL;
+        const char* to_revision_str = NULL;
+
         for (int i = 1; i < argc; ++i) {
             if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) {
                 id = argv[++i];
+            } else if (strcmp(action, "rollback") == 0 && strcmp(argv[i], "--to-revision") == 0 && i + 1 < argc) {
+                to_revision_str = argv[++i];
             }
         }
+
         if (!id) {
             char error_msg[128];
             snprintf(error_msg, sizeof(error_msg), "--id is required for 'rollout %s'.", action);
@@ -511,14 +516,26 @@ static phStatus handle_rollout_command(int argc, const char** argv) {
             return ph_ERROR_INVALID_ARGS;
         }
 
-        // The payload for these actions is simpler. The Rust orchestrator will find
-        // the existing phRelease resource for the app and patch its phase.
-        snprintf(json_payload, sizeof(json_payload),
-                 "{\"type\":\"%s\",\"id\":\"%s\"}",
-                 action, // "promote" or "rollback"
-                 id);
+        char payload_buffer[1024];
+        char* ptr = payload_buffer;
+        const char* end = payload_buffer + sizeof(payload_buffer);
 
-        logger_log_fmt(LOG_LEVEL_DEBUG, "KubeHandler", "Calling 'run_release_orchestrator' with payload: %s", json_payload);
+        ptr += snprintf(ptr, end - ptr, "{\"type\":\"%s\",\"id\":\"%s\"", action, id);
+
+        if (to_revision_str) {
+            // Basic validation: check if it's a number.
+            for (const char* p = to_revision_str; *p; p++) {
+                if (*p < '0' || *p > '9') {
+                    tui_print_error("--to-revision must be a positive integer.");
+                    return ph_ERROR_INVALID_ARGS;
+                }
+            }
+            ptr += snprintf(ptr, end - ptr, ",\"toRevision\":%s", to_revision_str);
+        }
+
+        snprintf(ptr, end - ptr, "}");
+
+        logger_log_fmt(LOG_LEVEL_DEBUG, "KubeHandler", "Calling 'run_release_orchestrator' with payload: %s", payload_buffer);
         unsigned char error_buffer[1024] = {0};
         int result = run_release_orchestrator(json_payload, error_buffer, sizeof(error_buffer));
         if (result != 0) {

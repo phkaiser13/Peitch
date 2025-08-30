@@ -48,6 +48,8 @@ pub struct StatusConfig {
 #[serde(rename_all = "camelCase")]
 pub struct IdConfig {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_revision: Option<i32>,
 }
 
 #[derive(Deserialize, Debug)]
