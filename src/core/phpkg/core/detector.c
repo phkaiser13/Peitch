@@ -1,4 +1,13 @@
-// peitch/src/core/phpkg/core/detector.c
+/* Copyright (C) 2025 Pedro Henrique / phkaiser13
+ * detector.c - Intelligent package manager detector for phpkg.
+ * 
+ * This module is responsible for detecting all available package managers
+ * on the system, determining their availability, versions, and calculating
+ * priorities based on OS, architecture, and package availability.
+ * It provides the foundation for phpkg's meta-package management capabilities
+ * by identifying which tools are available for package installation.
+ * 
+ * SPDX-License-Identifier: Apache-2.0 */
 
 #include <stdio.h>
 #include <stdlib.h>

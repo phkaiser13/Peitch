@@ -26,6 +26,7 @@ pub enum Commands {
     Create(CreateArgs),
 
     /// Delete an existing local Kubernetes cluster.
+    #[command(alias = "destroy")]
     Delete(DeleteArgs),
 
     /// List available local Kubernetes clusters.
