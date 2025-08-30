@@ -302,6 +302,29 @@ async fn handle_apply_action(config: MultiClusterConfig) -> Result<(), Error> {
 
 /// Handles the logic for the 'set_policy' action.
 async fn handle_set_policy_action(cluster_name: &str, policy_file_path: &str) -> Result<(), Error> {
-    ClusterManager::set_cluster_policy(cluster_name, policy_file_path).await?;
+    // To call the modified `set_cluster_policy` method, we first need an instance
+    // of the ClusterManager. To create one, we need to provide it with the
+    // configuration for the cluster we intend to contact.
+    
+    // We'll build a map of cluster configurations containing only our target cluster.
+    // The path to the kubeconfig is derived from a convention established elsewhere
+    // in the application (see the 'multi' command in the C layer).
+    let mut cluster_configs = BTreeMap::new();
+    cluster_configs.insert(
+        cluster_name.to_string(),
+        format!("/etc/ph/kubeconfigs/{}.yaml", cluster_name),
+    );
+
+    // Create a new ClusterManager instance with the configuration for our target cluster.
+    let manager = ClusterManager::new(&cluster_configs)
+        .await
+        .map_err(|e| Error::ExecutionFailed(e))?;
+
+    // Now, call the instance method to apply the policy.
+    manager
+        .set_cluster_policy(cluster_name, policy_file_path)
+        .await
+        .map_err(|e| Error::ExecutionFailed(e))?;
+
     Ok(())
 }

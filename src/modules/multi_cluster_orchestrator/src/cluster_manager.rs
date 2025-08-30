@@ -541,52 +541,48 @@ impl ClusterManager {
         Ok(applied_resources)
     }
 
-    /// Sets a new policy for a specific cluster in the main `clusters.yaml` file.
-    pub async fn set_cluster_policy(cluster_name: &str, policy_file_path: &str) -> Result<()> {
-        let clusters_config_path = Path::new("config/clusters.yaml");
+    /// Applies a set of policy manifests directly to a target cluster.
+    pub async fn set_cluster_policy(&self, cluster_name: &str, policy_file_path: &str) -> Result<()> {
         println!(
-            "Updating policy for cluster '{}' using policy file '{}'...",
+            "Applying policies to cluster '{}' from file '{}'...",
             cluster_name, policy_file_path
         );
 
-        // 1. Read and parse the main clusters.yaml file
-        let mut clusters_config: ClustersConfig = {
-            let content = fs::read_to_string(clusters_config_path)
-                .context("Failed to read config/clusters.yaml")?;
-            serde_yaml::from_str(&content).context("Failed to parse config/clusters.yaml")?
-        };
-
-        // 2. Read and parse the new policy file
-        let new_policies: BTreeMap<String, serde_yaml::Value> = {
-            let content = fs::read_to_string(policy_file_path)
-                .with_context(|| format!("Failed to read policy file '{}'", policy_file_path))?;
-            serde_yaml::from_str(&content)
-                .with_context(|| format!("Failed to parse policy file '{}' as YAML map", policy_file_path))?
-        };
-
-        // 3. Find the cluster and update its policies
-        let cluster_to_update = clusters_config
-            .clusters
-            .iter_mut()
-            .find(|c| c.name == cluster_name)
-            .ok_or_else(|| anyhow!("Cluster '{}' not found in config/clusters.yaml", cluster_name))?;
-        
-        println!("Found cluster '{}'. Applying new policies.", cluster_name);
-        cluster_to_update.policies = new_policies;
-
-        // 4. Create a backup of the original file
-        let backup_path = clusters_config_path.with_extension("yaml.bak");
-        fs::copy(clusters_config_path, &backup_path).with_context(|| {
-            format!("Failed to create backup file at '{}'", backup_path.display())
+        // 1. Get the Kubernetes client for the target cluster.
+        let client = self.clients.get(cluster_name).ok_or_else(|| {
+            anyhow!(
+                "Cluster '{}' is not a configured client. Check the cluster name and configuration.",
+                cluster_name
+            )
         })?;
-        println!("Created backup at '{}'", backup_path.display());
 
-        // 5. Write the updated configuration back to the file
-        let updated_content = serde_yaml::to_string(&clusters_config)?;
-        fs::write(clusters_config_path, updated_content)
-            .context("Failed to write updated content to config/clusters.yaml")?;
+        // 2. Read the policy file content.
+        let manifests = fs::read_to_string(policy_file_path)
+            .with_context(|| format!("Failed to read policy file '{}'", policy_file_path))?;
 
-        println!("✅ Successfully updated policy for cluster '{}'.", cluster_name);
+        if manifests.trim().is_empty() {
+            println!("Policy file '{}' is empty. Nothing to apply.", policy_file_path);
+            return Ok(());
+        }
+        
+        // 3. Reuse the existing `execute_apply` helper to apply the manifests.
+        // We provide an empty map for variables as policies are expected to be static.
+        let applied_resources = Self::execute_apply(client.clone(), &manifests, &BTreeMap::new())
+            .await
+            .with_context(|| format!("Failed to apply policies to cluster '{}'", cluster_name))?;
+
+        println!(
+            "✅ Successfully applied {} policy resource(s) to cluster '{}'.",
+            applied_resources.len(),
+            cluster_name
+        );
+        for resource in applied_resources {
+            println!(
+                "  - Applied: {} {}",
+                resource.gvk,
+                resource.name,
+            );
+        }
 
         Ok(())
     }
