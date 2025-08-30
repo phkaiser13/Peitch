@@ -41,11 +41,22 @@ pub struct Strategy {
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CanaryStrategy {
+    // These fields are now for the controller to parse.
+    // The CLI will populate the raw string fields below.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<CanaryStep>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analysis: Option<Analysis>,
     #[serde(default)]
     pub auto_promote: bool,
+
+    // Raw strings from CLI
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps_str: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metric_str: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_window_str: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]

@@ -24,3 +24,4 @@ pub mod utils;
 pub mod metrics_analyzer; 
 pub mod autoheal_controller;
 pub mod dr_controller;
+pub mod gitsync_controller;

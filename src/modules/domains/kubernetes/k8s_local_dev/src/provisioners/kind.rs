@@ -1,6 +1,6 @@
 /* Copyright (C) 2025 Pedro Henrique / phkaiser13
- * File: src/modules/k8s_local_dev/src/provisioners/minikube.rs
- * Implements the `Provisioner` trait for Minikube using the `minikube` CLI.
+ * File: src/modules/k8s_local_dev/src/provisioners/kind.rs
+ * Implements the `Provisioner` trait for kind (Kubernetes in Docker).
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -9,50 +9,50 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tokio::process::Command;
 
-/// Represents the 'minikube' provisioner backed by the minikube CLI.
-pub struct MinikubeProvisioner;
+/// Represents the 'kind' provisioner backed by the kind CLI.
+pub struct KindProvisioner;
 
 #[async_trait]
-impl Provisioner for MinikubeProvisioner {
-    /// Creates a minikube cluster via `minikube start -p <name> [--kubernetes-version=<ver>]`.
-    /// If `k8s_version` is empty, the `--kubernetes-version` flag is omitted.
+impl Provisioner for KindProvisioner {
+    /// Creates a kind cluster via `kind create cluster --name <name> [--image kindest/node:v<ver>]`.
+    /// If `k8s_version` is empty, the `--image` flag is omitted, using the kind default.
     async fn create(&self, name: &str, k8s_version: &str) -> Result<()> {
-        let mut command = Command::new("minikube");
-        command.arg("start").arg("-p").arg(name);
+        let mut command = Command::new("kind");
+        command.arg("create").arg("cluster").arg("--name").arg(name);
 
         if !k8s_version.is_empty() {
-            command
-                .arg("--kubernetes-version")
-                .arg(k8s_version);
+            let image = format!("kindest/node:v{}", k8s_version);
+            command.arg("--image").arg(image);
         }
 
         execute_command(&mut command)
             .await
-            .context("Failed to execute 'minikube start'")?;
+            .context("Failed to execute 'kind create cluster'")?;
 
         Ok(())
     }
 
-    /// Deletes a minikube cluster via `minikube delete -p <name>`.
+    /// Deletes a kind cluster via `kind delete cluster --name <name>`.
+    /// This function was missing its implementation.
     async fn delete(&self, name: &str) -> Result<()> {
-        let mut command = Command::new("minikube");
-        command.arg("delete").arg("-p").arg(name);
+        let mut command = Command::new("kind");
+        command.arg("delete").arg("cluster").arg("--name").arg(name);
 
         execute_command(&mut command)
             .await
-            .context("Failed to execute 'minikube delete'")?;
+            .context("Failed to execute 'kind delete cluster'")?;
 
         Ok(())
     }
 
-    /// Lists minikube profiles via `minikube profile list`.
+    /// Lists kind clusters via `kind get clusters`.
     async fn list(&self) -> Result<()> {
-        let mut command = Command::new("minikube");
-        command.arg("profile").arg("list");
+        let mut command = Command::new("kind");
+        command.arg("get").arg("clusters");
 
         execute_command(&mut command)
             .await
-            .context("Failed to execute 'minikube profile list'")?;
+            .context("Failed to execute 'kind get clusters'")?;
 
         Ok(())
     }

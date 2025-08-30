@@ -46,8 +46,10 @@
 //        execution timestamp, enabling the cooldown logic for subsequent alerts.
 //
 use crate::crds::{
-    phAutoHealRule, phAutoHealRuleStatus, HealState, NotifyAction, SnapshotAction, StatusCondition,
+    phAutoHealRule, phAutoHealRuleStatus, ActionSpec, HealState, NotifyAction, RedeployAction,
+    RunbookSpec, ScaleUpAction, SnapshotAction, StatusCondition,
 };
+use anyhow::{anyhow, Context, Result as AnyhowResult};
 use chrono::{DateTime, Utc};
 use futures::stream::StreamExt;
 use k8s_openapi::api::apps::v1::Deployment;
@@ -282,7 +284,21 @@ async fn handle_webhook(
 
 /// Processes a single rule: checks cooldown and executes the defined actions if applicable.
 async fn process_rule(rule: phAutoHealRule, alert: Alert, client: Client) -> Result<(), Error> {
-    // 1. Cooldown Check
+    // 1. Parse actions string from the spec.
+    let actions = match parse_actions_str(&rule.spec.actions_str) {
+        Ok(actions) => actions,
+        Err(e) => {
+            // If parsing fails, update the CRD status with an error and stop.
+            let error_message = format!("Failed to parse actions_str: {}", e);
+            error!(rule = %rule.name_any(), error = %error_message, "Invalid rule spec");
+            update_status_with_error(&rule, &client, &error_message).await?;
+            // Return Ok here because the error is with the resource, not the controller.
+            // The controller has done its job by reporting the invalid spec.
+            return Ok(());
+        }
+    };
+
+    // 2. Cooldown Check
     let now = Utc::now();
     if let Some(status) = &rule.status {
         if let Some(last_exec_str) = &status.last_execution_time {
@@ -296,9 +312,9 @@ async fn process_rule(rule: phAutoHealRule, alert: Alert, client: Client) -> Res
         }
     }
 
-    // 2. Execute all defined actions sequentially.
-    info!(rule = %rule.name_any(), "Executing {} action(s) for rule", rule.spec.actions.len());
-    for (i, action) in rule.spec.actions.iter().enumerate() {
+    // 3. Execute all defined actions sequentially.
+    info!(rule = %rule.name_any(), "Executing {} action(s) for rule", actions.len());
+    for (i, action) in actions.iter().enumerate() {
         info!(action_index = i + 1, "Executing action");
         if let Some(redeploy) = &action.redeploy {
             if let Err(e) = execute_redeploy_action(&rule, &alert, &client, redeploy).await {
@@ -326,8 +342,8 @@ async fn process_rule(rule: phAutoHealRule, alert: Alert, client: Client) -> Res
         }
     }
 
-    // 3. Update Status after all actions are attempted.
-    update_status(&rule, &client).await?;
+    // 4. Update Status after all actions are attempted.
+    update_status_after_success(&rule, &client).await?;
 
     Ok(())
 }
@@ -595,32 +611,88 @@ async fn execute_runbook_action(
     Ok(())
 }
 
-/// Updates the status of the `phAutoHealRule` resource after an action.
-async fn update_status(rule: &phAutoHealRule, client: &Client) -> Result<(), Error> {
+/// Updates the status of the `phAutoHealRule` resource after a successful action.
+async fn update_status_after_success(rule: &phAutoHealRule, client: &Client) -> Result<(), Error> {
     let ns = rule.namespace().ok_or(Error::MissingObjectKey("namespace"))?;
     let api: Api<phAutoHealRule> = Api::namespaced(client.clone(), &ns);
 
     let new_status = phAutoHealRuleStatus {
-        state: Some(HealState::Executing),
+        state: Some(HealState::Cooldown),
         last_execution_time: Some(Utc::now().to_rfc3339()),
         executions_count: Some(rule.status.as_ref().and_then(|s| s.executions_count).unwrap_or(0) + 1),
         conditions: vec![StatusCondition {
-            type_: "Triggered".to_string(),
-            message: "Auto-heal action Job has been created.".to_string(),
+            type_: "Succeeded".to_string(),
+            message: "Auto-heal actions executed successfully.".to_string(),
         }],
     };
 
-    let patch = Patch::Apply(serde_json::json!({
-        "apiVersion": "ph.kaiser.io/v1alpha1",
-        "kind": "phAutoHealRule",
-        "status": new_status
-    }));
-
+    let patch = Patch::Apply(json!({ "status": new_status }));
     let ps = PatchParams::apply("ph-operator-autoheal-controller").force();
     api.patch_status(&rule.name_any(), &ps, &patch).await?;
-    info!(rule = %rule.name_any(), "Updated status successfully");
+    info!(rule = %rule.name_any(), "Updated status to Cooldown after successful execution");
     Ok(())
 }
+
+/// Updates the status of the `phAutoHealRule` resource when an error occurs (e.g., invalid spec).
+async fn update_status_with_error(rule: &phAutoHealRule, client: &Client, error_message: &str) -> Result<(), Error> {
+    let ns = rule.namespace().ok_or(Error::MissingObjectKey("namespace"))?;
+    let api: Api<phAutoHealRule> = Api::namespaced(client.clone(), &ns);
+
+    let new_status = phAutoHealRuleStatus {
+        state: Some(HealState::Failed),
+        last_execution_time: None, // No execution happened
+        executions_count: rule.status.as_ref().and_then(|s| s.executions_count),
+        conditions: vec![StatusCondition {
+            type_: "InvalidSpec".to_string(),
+            message: error_message.to_string(),
+        }],
+    };
+
+    let patch = Patch::Apply(json!({ "status": new_status }));
+    let ps = PatchParams::apply("ph-operator-autoheal-controller").force();
+    api.patch_status(&rule.name_any(), &ps, &patch).await?;
+    info!(rule = %rule.name_any(), "Updated status to Failed due to invalid spec");
+    Ok(())
+}
+
+/// Parses the action string (e.g., "redeploy:app,scale-up:app:3") into a structured Vec.
+fn parse_actions_str(actions_str: &str) -> AnyhowResult<Vec<ActionSpec>> {
+    let mut actions = Vec::new();
+    for action_part in actions_str.split(',') {
+        let parts: Vec<&str> = action_part.trim().split(':').collect();
+        let action_name = *parts.get(0).ok_or_else(|| anyhow!("Empty action part"))?;
+
+        let heal_action = match action_name {
+            "redeploy" => {
+                let target = parts.get(1).map(|s| s.trim()).ok_or_else(|| anyhow!("Missing target for redeploy action"))?;
+                ActionSpec {
+                    redeploy: Some(RedeployAction { target: target.to_string() }),
+                    ..Default::default()
+                }
+            }
+            "scale-up" => {
+                let target = parts.get(1).map(|s| s.trim()).ok_or_else(|| anyhow!("Missing target for scale-up action"))?;
+                let replicas_str = parts.get(2).map(|s| s.trim()).ok_or_else(|| anyhow!("Missing replica count for scale-up action"))?;
+                let replicas = replicas_str.parse::<i32>().context("Invalid replica count for scale-up")?;
+                ActionSpec {
+                    scale_up: Some(ScaleUpAction { target: target.to_string(), replicas }),
+                    ..Default::default()
+                }
+            }
+            "runbook" => {
+                let script_name = parts.get(1).map(|s| s.trim()).ok_or_else(|| anyhow!("Missing scriptName for runbook action"))?;
+                ActionSpec {
+                    runbook: Some(RunbookSpec { script_name: script_name.to_string() }),
+                    ..Default::default()
+                }
+            }
+            _ => return Err(anyhow!("Unknown action type: {}", action_name)),
+        };
+        actions.push(heal_action);
+    }
+    Ok(actions)
+}
+
 
 // --- Utility Functions ---
 

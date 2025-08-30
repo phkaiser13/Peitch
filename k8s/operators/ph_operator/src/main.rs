@@ -52,6 +52,7 @@ mod controllers {
     pub mod audit_controller;
     pub mod autoheal_controller; // New controller for auto-healing logic
     pub mod dr_controller;
+    pub mod gitsync_controller;
     pub mod pipeline_controller;
     pub mod preview_controller;
     pub mod rbac_policy_controller;
@@ -59,7 +60,9 @@ mod controllers {
 }
 
 // Re-exporting the CRDs for easier access.
-use crds::{phAutoHealRule, phPipeline, phPreview, phRelease, PhgitDisasterRecovery};
+use crds::{
+    phAutoHealRule, phPipeline, phPreview, phRelease, PhgitDisasterRecovery, PhgitSyncJob,
+};
 
 // The shared context struct passed to the traditional controllers.
 pub struct Context {
@@ -129,6 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let releases = kube::Api::<phRelease>::all(client.clone());
     let pipelines = kube::Api::<phPipeline>::all(client.clone());
     let dr_resources = kube::Api::<PhgitDisasterRecovery>::all(client.clone());
+    let gitsyncjobs = kube::Api::<PhgitSyncJob>::all(client.clone());
     
     // 3. Create the shared context for traditional controllers
     // This includes initializing the Prometheus client.
@@ -214,7 +218,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         controllers::rbac_policy_controller::run(client.clone()),
 
         // --- Audit Controller ---
-        controllers::audit_controller::run(client.clone())
+        controllers::audit_controller::run(client.clone()),
+
+        // --- GitSyncJob Controller ---
+        Controller::new(gitsyncjobs, Default::default())
+            .run(
+                controllers::gitsync_controller::reconcile,
+                controllers::gitsync_controller::on_error,
+                context.clone(),
+            )
+            .for_each(|res| async move {
+                match res {
+                    Ok(o) => info!("Reconciled PhgitSyncJob: {:?}", o),
+                    Err(e) => tracing::error!("PhgitSyncJob reconcile error: {}", e),
+                }
+            })
     );
 
     info!("ph Operator shutting down.");

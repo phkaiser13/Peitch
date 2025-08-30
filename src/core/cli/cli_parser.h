@@ -23,6 +23,20 @@
 extern "C" {
 #endif
 
+    // Function pointer type for a command handler
+    typedef phStatus (*CommandHandler)(int, const char**);
+
+    /**
+     * @brief Registers a new command group handler.
+     *
+     * This function allows external modules to register a top-level command
+     * and associate it with a handler function.
+     *
+     * @param name The name of the command (e.g., "local").
+     * @param handler A function pointer to the handler for this command group.
+     */
+    void cli_register_command_group(const char* name, CommandHandler handler);
+
     /**
      * @brief Parses and dispatches a command to the appropriate module.
      *

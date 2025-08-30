@@ -33,6 +33,9 @@
 #include "module_loader/loader.h"
 #include "scripting/lua-h/lua_bridge.h"
 
+// Domain-specific module headers for registration
+#include "modules/domains/kubernetes/cli/registration.h"
+
 // Shared library headers
 #include "libs/liblogger/Logger.hpp"
 
@@ -125,6 +128,13 @@ static int initialize_subsystems(void) {
         return -1;
     }
     logger_log(LOG_LEVEL_INFO, "MAIN", "All modules loaded successfully.");
+
+    // --- Register Domain-Specific Commands ---
+    // This is where the dependency inversion happens. The core calls out to
+    // domains and asks them to register their commands with the CLI dispatcher.
+    k8s_cli_register_commands();
+    // In the future, other domains would add their registration calls here.
+    // e.g., cloud_cli_register_commands();
 
     return 0; // Success
 }
