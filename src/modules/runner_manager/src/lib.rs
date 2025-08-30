@@ -20,12 +20,35 @@ use std::panic;
 
 async fn handle_scale(config: ScaleConfig) -> Result<()> {
     println!("🚀 Scaling runners in cluster '{}'...", config.cluster);
-    // In a real scenario, this would likely patch a custom 'RunnerSet' resource
-    // or a Deployment. For this example, we'll just print the intended action.
-    println!("   -> Min Replicas: {}", config.min);
-    println!("   -> Max Replicas: {}", config.max);
-    println!("   -> Metric: {}", config.metric);
-    println!("✅ [SIMULATION] Applied scaling parameters.");
+    
+    // In a real implementation, the client would be configured for the specific cluster.
+    // For now, we use the default client, assuming it's configured for the target cluster.
+    let client = Client::try_default().await?;
+    
+    // The HPA is assumed to be in the 'phgit-runner' namespace by default.
+    let hpa_api: Api<HorizontalPodAutoscaler> = Api::namespaced(client, "phgit-runner");
+    let hpa_name = "phgit-runner-hpa";
+
+    println!("   -> Fetching HPA '{}'...", hpa_name);
+    
+    // Check if the HPA exists before trying to patch it.
+    if let Err(e) = hpa_api.get(hpa_name).await {
+        return Err(anyhow::anyhow!("Failed to get HPA '{}': {}. Please ensure it is installed with 'phgit runners hpa install'.", hpa_name, e));
+    }
+
+    println!("   -> Applying scaling parameters: Min={}, Max={}", config.min, config.max);
+
+    let patch = serde_json::json!({
+        "spec": {
+            "minReplicas": config.min,
+            "maxReplicas": config.max
+            // The metric is configured during 'hpa install' and is not typically changed during scaling.
+        }
+    });
+
+    hpa_api.patch(hpa_name, &PatchParams::merge(), &Patch::Merge(&patch)).await?;
+    
+    println!("✅ Successfully applied scaling parameters to HPA '{}'.", hpa_name);
     Ok(())
 }
 

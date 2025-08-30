@@ -1,0 +1,85 @@
+# Copyright (C) 2025 Pedro Henrique / phkaiser13
+#
+# File: k8s/crd/ph.io_phgitrbacpolicies.yaml
+#
+# This file defines the Custom Resource Definition (CRD) for the PhgitRbacPolicy
+# resource. This CRD provides a declarative, GitOps-friendly way to manage
+# role-based access control (RBAC) for the phgit ecosystem.
+#
+# Architecture:
+# - Instead of creating Kubernetes RoleBindings imperatively via CLI commands,
+#   users can now define a PhgitRbacPolicy resource in their Git repository.
+# - The `rbac_policy_controller` will watch for these resources and ensure that
+#   a corresponding RoleBinding exists in the target cluster, effectively
+#   reconciling the desired state from Git with the live state in Kubernetes.
+# - This approach makes RBAC management auditable, version-controlled, and
+#   consistent with GitOps principles.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: phgitrbacpolicies.ph.io
+spec:
+  group: ph.io
+  scope: Namespaced # Policies are namespaced to control where the RoleBinding is created
+  names:
+    plural: phgitrbacpolicies
+    singular: phgitrbacpolicy
+    kind: PhgitRbacPolicy
+    shortNames:
+    - prp
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - role
+                - subject
+              properties:
+                role:
+                  type: string
+                  description: "The user-friendly role name (e.g., 'promoter', 'preview-admin'). This will be mapped to a real ClusterRole by the controller."
+                subject:
+                  type: object
+                  required:
+                    - kind
+                    - name
+                  properties:
+                    kind:
+                      type: string
+                      enum: [User, Group]
+                      description: "The kind of subject (User or Group)."
+                    name:
+                      type: string
+                      description: "The name of the user or group."
+            status:
+              type: object
+              properties:
+                bindingName:
+                  type: string
+                  description: "The name of the managed RoleBinding resource."
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      message:
+                        type: string
+      subresources:
+        status: {}

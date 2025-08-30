@@ -49,10 +49,12 @@ use warp::Filter;
 mod crds;
 mod metrics;
 mod controllers {
+    pub mod audit_controller;
     pub mod autoheal_controller; // New controller for auto-healing logic
     pub mod dr_controller;
     pub mod pipeline_controller;
     pub mod preview_controller;
+    pub mod rbac_policy_controller;
     pub mod release_controller;
 }
 
@@ -206,7 +208,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(o) => info!("Reconciled PhgitDisasterRecovery: {:?}", o),
                     Err(e) => tracing::error!("PhgitDisasterRecovery reconcile error: {}", e),
                 }
-            })
+            }),
+        
+        // --- RBAC Policy Controller ---
+        controllers::rbac_policy_controller::run(client.clone()),
+
+        // --- Audit Controller ---
+        controllers::audit_controller::run(client.clone())
     );
 
     info!("ph Operator shutting down.");

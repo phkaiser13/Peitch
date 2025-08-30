@@ -64,10 +64,17 @@ use kube::{
     },
     Error as KubeError, ResourceExt,
 };
+use opentelemetry::{
+    global,
+    propagation::{Extractor, TextMapPropagator},
+    sdk::propagation::TraceContextPropagator,
+};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use tracing::{info_span, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 // The unique identifier for our controller's finalizer.
 const RELEASE_FINALIZER: &str = "ph.io/release-finalizer";
@@ -114,28 +121,62 @@ impl Context {
     }
 }
 
+// Helper struct to extract trace context from Kubernetes annotations.
+struct AnnotationExtractor<'a>(&'a std::collections::BTreeMap<String, String>);
+impl<'a> opentelemetry::propagation::Extractor for AnnotationExtractor<'a> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).map(|s| s.as_str())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|s| s.as_str()).collect()
+    }
+}
+
 /// Main reconciliation function for the phRelease resource.
 pub async fn reconcile(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Action, Error> {
-    let ns = release
-        .namespace()
-        .ok_or_else(|| KubeError::Request(http::Error::new("Missing namespace for phRelease")))?;
-    let releases: Api<phRelease> = Api::namespaced(ctx.client.clone(), &ns);
+    // --- OpenTelemetry: Context Extraction ---
+    let propagator = TraceContextPropagator::new();
+    let parent_context = propagator.extract(&AnnotationExtractor(release.annotations()));
+    let span = info_span!(
+        "reconcile_release",
+        "ph.release.name" = release.name_any().as_str(),
+        "ph.release.app" = release.spec.as_ref().map_or("unknown", |s| s.app_name.as_str())
+    );
+    span.set_parent(parent_context);
 
-    // Use the finalizer helper to manage the resource lifecycle.
-    finalizer(&releases, RELEASE_FINALIZER, release, |event| async {
-        match event {
-            FinalizerEvent::Apply(r) => apply_release(r, ctx.clone()).await,
-            FinalizerEvent::Cleanup(r) => cleanup_release(r, ctx.clone()).await,
-        }
-    })
+    // Instrument the entire reconciliation process.
+    async move {
+        let ns = release
+            .namespace()
+            .ok_or_else(|| KubeError::Request(http::Error::new("Missing namespace for phRelease")))?;
+        let releases: Api<phRelease> = Api::namespaced(ctx.client.clone(), &ns);
+
+        // Use the finalizer helper to manage the resource lifecycle.
+        finalizer(&releases, RELEASE_FINALIZER, release, |event| async {
+            match event {
+                FinalizerEvent::Apply(r) => apply_release(r, ctx.clone()).await,
+                FinalizerEvent::Cleanup(r) => cleanup_release(r, ctx.clone()).await,
+            }
+        })
+        .await
+        .map_err(|e| KubeError::Request(http::Error::new(e.to_string())).into())
+    }
+    .instrument(span)
     .await
-    .map_err(|e| KubeError::Request(http::Error::new(e.to_string())).into())
 }
 
 /// The core logic for creating and managing a Canary release, now a state machine.
+use tracing::field;
+
 async fn apply_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Action, Error> {
-    let client = ctx.client.clone();
-    let ns = release.namespace().unwrap();
+    let span = info_span!(
+        "apply_release",
+        "ph.release.phase" = tracing::field::Empty
+    );
+    async move {
+        let client = ctx.client.clone();
+        let ns = release.namespace().unwrap();
     let spec = release.spec.as_ref().ok_or(Error::MissingSpec)?;
     let status = release.status.as_ref().cloned().unwrap_or_default();
     let releases: Api<phRelease> = Api::namespaced(client.clone(), &ns);
@@ -168,7 +209,10 @@ async fn apply_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Act
 
         // Config is present, perform the verification.
         println!("🔒 Performing mandatory signature verification for release '{}'", release_name);
-        match verify_image_signature_for_release(release.clone(), ctx.clone()).await {
+        match verify_image_signature_for_release(release.clone(), ctx.clone())
+            .instrument(info_span!("verify_image_signature"))
+            .await
+        {
             Ok(_) => {
                 println!("✅ Signature verification successful for '{}'", release_name);
             }
@@ -187,6 +231,7 @@ async fn apply_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Act
 
     // Determine the current phase, defaulting to Progressing if not set.
     let current_phase = status.phase.clone().unwrap_or(ReleasePhase::Progressing);
+    span.record("ph.release.phase", &serde_json::to_string(&current_phase).unwrap_or_default());
 
     // --- STATE MACHINE ---
     match current_phase {
@@ -200,7 +245,7 @@ async fn apply_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Act
 
             // If the canary deployment doesn't exist, this is the initial setup.
             if deployments.get(&canary_name).await.is_err() {
-                return initial_setup(release, ctx).await;
+                return initial_setup(release, ctx).instrument(info_span!("initial_setup")).await;
             }
 
             // Deployments exist, proceed with the analysis loop if configured.
@@ -252,6 +297,7 @@ async fn apply_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Act
                     &analysis_config.metrics,
                     status.analysis_run.as_ref().and_then(|ar| ar.metric_history.as_ref()),
                 )
+                .instrument(info_span!("run_metrics_analysis"))
                 .await?;
                 let mut analysis_run_status = status.analysis_run.clone().unwrap_or_default();
                 analysis_run_status.metric_history = Some(new_history);
@@ -345,17 +391,18 @@ async fn apply_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Act
         }
         ReleasePhase::Promoting => {
             println!("Reconciling release '{}' in Promoting phase.", release_name);
-            promote_release(release, ctx).await
+            promote_release(release, ctx).instrument(info_span!("promote_release")).await
         }
         ReleasePhase::RollingBack => {
             println!("Reconciling release '{}' in RollingBack phase.", release_name);
-            rollback_release(release, ctx).await
+            rollback_release(release, ctx).instrument(info_span!("rollback_release")).await
         }
         ReleasePhase::Succeeded | ReleasePhase::Failed | ReleasePhase::Paused => {
             println!("Reconciliation for '{}' is complete (Phase: {:?}). No action needed.", release_name, status.phase);
             Ok(Action::await_change())
         }
     }
+    }.instrument(span).await
 }
 
 /// Runs analysis for all configured metrics and returns the results.
