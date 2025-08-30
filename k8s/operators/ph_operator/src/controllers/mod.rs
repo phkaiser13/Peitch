@@ -20,6 +20,7 @@
 pub mod pipeline_controller;
 pub mod preview_controller;
 pub mod release_controller;
+pub mod utils;
 pub mod metrics_analyzer; 
 pub mod autoheal_controller;
 pub mod dr_controller;

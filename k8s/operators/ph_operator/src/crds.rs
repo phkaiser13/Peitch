@@ -504,6 +504,53 @@ pub struct phAutoHealRuleStatus {
     pub conditions: Vec<StatusCondition>,
 }
 
+// --- PhgitAudit Custom Resource Definition ---
+
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "ph.io",
+    version = "v1alpha1",
+    kind = "PhgitAudit",
+    scope = "Cluster",
+    printcolumn = r#"{"name":"Component", "type":"string", "jsonPath":".spec.component"}"#,
+    printcolumn = r#"{"name":"Verb", "type":"string", "jsonPath":".spec.verb"}"#,
+    printcolumn = r#"{"name":"User", "type":"string", "jsonPath":".spec.actor.user"}"#,
+    printcolumn = r#"{"name":"Age", "type":"date", "jsonPath":".spec.timestamp"}"#,
+    shortname = "pgaud"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct PhgitAuditSpec {
+    pub timestamp: String,
+    pub verb: String,
+    pub component: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<Actor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<Target>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub details: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Actor {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ip: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Target {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
 
 // --- PhgitDisasterRecovery Custom Resource Definition ---
 
@@ -589,4 +636,41 @@ pub enum DRState {
     FailingOver,
     ActiveOnDR,
     Failed,
+}
+
+// --- PhgitRbacPolicy Custom Resource Definition ---
+
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "ph.io",
+    version = "v1alpha1",
+    kind = "PhgitRbacPolicy",
+    namespaced,
+    status = "PhgitRbacPolicyStatus",
+    printcolumn = r#"{"name":"Role", "type":"string", "jsonPath":".spec.role"}"#,
+    printcolumn = r#"{"name":"Subject Kind", "type":"string", "jsonPath":".spec.subject.kind"}"#,
+    printcolumn = r#"{"name":"Subject Name", "type":"string", "jsonPath":".spec.subject.name"}"#,
+    printcolumn = r#"{"name":"Status", "type":"string", "jsonPath":".status.conditions[-1:].type"}"#,
+    shortname = "phrbac"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct PhgitRbacPolicySpec {
+    pub role: String,
+    pub subject: Subject,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Subject {
+    pub kind: String,
+    pub name: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PhgitRbacPolicyStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<StatusCondition>,
 }

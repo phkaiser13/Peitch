@@ -334,6 +334,30 @@ async fn process_rule(rule: phAutoHealRule, alert: Alert, client: Client) -> Res
 
 // --- Action Execution Helpers ---
 
+/// Performs simple string replacement for placeholders in notification templates.
+fn template_message(template: &str, rule: &phAutoHealRule, alert: &Alert) -> String {
+    let mut message = template.to_string();
+
+    // Rule-based placeholders
+    message = message.replace("{{ .Rule.Name }}", &rule.name_any());
+    if let Some(ns) = rule.namespace() {
+        message = message.replace("{{ .Rule.Namespace }}", &ns);
+    }
+
+    // Alert-based placeholders
+    for (key, value) in &alert.labels {
+        let placeholder = format!("{{{{ .Alert.Labels.{} }}}}", key);
+        message = message.replace(&placeholder, value);
+    }
+    for (key, value) in &alert.annotations {
+        let placeholder = format!("{{{{ .Alert.Annotations.{} }}}}", key);
+        message = message.replace(&placeholder, value);
+    }
+
+    message
+}
+
+
 /// Executes a notification action, sending messages to Slack and/or creating an issue.
 async fn execute_notify_action(
     rule: &phAutoHealRule,
@@ -345,42 +369,47 @@ async fn execute_notify_action(
 
     let mut slack_payload = None;
     if let Some(slack_config) = &action.slack {
-        // Fetch the webhook URL from the specified secret
         let secrets: Api<Secret> = Api::namespaced(client.clone(), rule.namespace().unwrap().as_str());
-        let secret = secrets.get(&slack_config.webhook_url_secret_ref).await?;
-        if let Some(data) = secret.data {
-            if let Some(url_bytes) = data.get("webhookUrl") {
-                let webhook_url = String::from_utf8(url_bytes.0.clone()).unwrap_or_default();
-                if !webhook_url.is_empty() {
-                    // TODO: Implement simple templating for the message
-                    slack_payload = Some(SlackNotification {
-                        webhook_url: &webhook_url,
-                        message: &slack_config.message,
-                    });
+        if let Ok(secret) = secrets.get(&slack_config.webhook_url_secret_ref).await {
+            if let Some(data) = secret.data {
+                if let Some(url_bytes) = data.get("webhookUrl") {
+                    let webhook_url = String::from_utf8(url_bytes.0.clone()).unwrap_or_default();
+                    if !webhook_url.is_empty() {
+                        let templated_message = template_message(&slack_config.message, rule, alert);
+                        slack_payload = Some(SlackNotification {
+                            webhook_url: &webhook_url,
+                            message: &templated_message,
+                        });
+                    } else {
+                        warn!("'webhookUrl' key in secret '{}' is empty.", slack_config.webhook_url_secret_ref);
+                    }
                 } else {
-                    warn!("'webhookUrl' key in secret '{}' is empty.", slack_config.webhook_url_secret_ref);
+                    warn!("'webhookUrl' key not found in secret '{}'.", slack_config.webhook_url_secret_ref);
                 }
-            } else {
-                warn!("'webhookUrl' key not found in secret '{}'.", slack_config.webhook_url_secret_ref);
             }
+        } else {
+            warn!("Could not find secret '{}' for Slack webhook.", slack_config.webhook_url_secret_ref);
         }
     }
 
     let mut issue_payload = None;
     if let Some(issue_config) = &action.issue {
-        // TODO: Implement simple templating for title and body
-        // TODO: The repo needs to be configured somewhere, for now, hardcoding
+        // The repo could be made configurable in the CRD in the future.
         let repo = "phkaiser13/peitch";
+        let templated_title = template_message(&issue_config.title, rule, alert);
+        let templated_body = template_message(&issue_config.body, rule, alert);
         issue_payload = Some(IssueNotification {
             repo,
-            title: &issue_config.title,
-            body: &issue_config.body,
+            title: &templated_title,
+            body: &templated_body,
         });
     }
 
-    send_notification(slack_payload, issue_payload)
-        .await
-        .map_err(|e| Error::FailoverError(e.to_string()))?;
+    if slack_payload.is_some() || issue_payload.is_some() {
+        send_notification(slack_payload, issue_payload)
+            .await
+            .map_err(|e| Error::FailoverError(e.to_string()))?;
+    }
 
     Ok(())
 }

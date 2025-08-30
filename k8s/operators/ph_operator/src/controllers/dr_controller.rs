@@ -29,12 +29,12 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+use crate::controllers::utils::{replicate_configmaps, replicate_secrets};
 use crate::crds::{
     ActiveCluster, DRState, PhgitDisasterRecovery, PhgitDisasterRecoveryStatus,
 };
 use crate::metrics_analyzer::{AnalysisResult, PrometheusClient};
 use anyhow::Result;
-use secret_manager::replicate_secrets;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
@@ -237,9 +237,12 @@ pub async fn reconcile(
             replicate_secrets(primary_client.clone(), dr_client.clone(), app_ns, &label_selector)
                 .await
                 .map_err(|e| Error::FailoverError(format!("Secret replication failed: {}", e)))?;
-            
-            // TODO: A similar function should be created for ConfigMaps. For now, we log it.
-            println!("[INFO] ConfigMap replication is not yet refactored into a shared module.");
+
+            // 2b. Replicate ConfigMaps using the new shared utility function.
+            println!("Replicating ConfigMaps for '{}'", app_name);
+            replicate_configmaps(primary_client.clone(), dr_client.clone(), app_ns, &label_selector)
+                .await
+                .map_err(|e| Error::FailoverError(format!("ConfigMap replication failed: {}", e)))?;
 
             // Placeholder for artifact replication
             println!("[INFO] Artifact replication (e.g., container images) is a manual process or not yet implemented.");
