@@ -144,8 +144,13 @@ static phStatus handle_failover_command(int argc, const char** argv) {
              app, from_cluster, to_cluster);
 
     logger_log_fmt(LOG_LEVEL_DEBUG, "KubeHandler", "Calling 'run_multi_cluster_orchestrator' with payload: %s", json_payload);
-    int result = run_multi_cluster_orchestrator(json_payload);
-    return result == 0 ? ph_SUCCESS : ph_ERROR_EXEC_FAILED;
+    char error_buffer[512] = {0};
+    int result = run_multi_cluster_orchestrator(json_payload, error_buffer, sizeof(error_buffer));
+    if (result != 0) {
+        tui_print_error(error_buffer);
+        return ph_ERROR_EXEC_FAILED;
+    }
+    return ph_SUCCESS;
 }
 
 static phStatus handle_grant_command(int argc, const char** argv) {
@@ -714,36 +719,45 @@ static phStatus handle_multi_command(int argc, const char** argv) {
 
 
     logger_log_fmt(LOG_LEVEL_DEBUG, "KubeHandler", "Calling 'multi_cluster_orchestrator' with payload: %s", json_buffer);
-    int result = run_multi_cluster_orchestrator(json_buffer);
+    char error_buffer[512] = {0};
+    int result = run_multi_cluster_orchestrator(json_buffer, error_buffer, sizeof(error_buffer));
 
     free(clusters_copy);
     free(manifest_content);
     free(escaped_manifest);
-    return result == 0 ? ph_SUCCESS : ph_ERROR_EXEC_FAILED;
+
+    if (result != 0) {
+        tui_print_error(error_buffer);
+        return ph_ERROR_EXEC_FAILED;
+    }
+
+    return ph_SUCCESS;
 }
 
 static phStatus handle_cluster_command(int argc, const char** argv) {
-    if (argc < 1) {
-        tui_print_error("No action provided for 'cluster'. Usage: ph kube cluster <action> [options]");
+    if (argc < 2) { // Expecting "policy set ..."
+        tui_print_error("Invalid action for 'cluster' command. Usage: ph kube cluster policy set <cluster-name> [options]");
         return ph_ERROR_INVALID_ARGS;
     }
 
     const char* action = argv[0];
-    if (strcmp(action, "policy") != 0) {
-        tui_print_error("Only 'policy' action is supported for 'cluster' command.");
+    const char* sub_action = argv[1];
+
+    if (strcmp(action, "policy") != 0 || strcmp(sub_action, "set") != 0) {
+        tui_print_error("Only 'policy set' action is supported for 'cluster' command.");
         return ph_ERROR_INVALID_ARGS;
     }
 
-    // After 'policy', we expect the cluster name, then options.
-    if (argc < 3) { // Expecting "policy", "cluster_name", "--policy-file", "path"
-        tui_print_error("Usage: ph kube cluster policy <cluster-name> --policy-file <file-path>");
+    // After 'policy set', we expect the cluster name, then options.
+    if (argc < 4) { // Expecting "policy", "set", "cluster_name", "--policy-file", "path"
+        tui_print_error("Usage: ph kube cluster policy set <cluster-name> --policy-file <file-path>");
         return ph_ERROR_INVALID_ARGS;
     }
 
-    const char* cluster_name = argv[1];
+    const char* cluster_name = argv[2];
     const char* policy_file_path = NULL;
 
-    for (int i = 2; i < argc; ++i) {
+    for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "--policy-file") == 0 && i + 1 < argc) {
             policy_file_path = argv[++i];
         }
@@ -765,9 +779,15 @@ static phStatus handle_cluster_command(int argc, const char** argv) {
              cluster_name, policy_file_path);
     
     logger_log_fmt(LOG_LEVEL_DEBUG, "KubeHandler", "Calling 'run_multi_cluster_orchestrator' with payload: %s", json_payload);
-    int result = run_multi_cluster_orchestrator(json_payload);
+    char error_buffer[512] = {0};
+    int result = run_multi_cluster_orchestrator(json_payload, error_buffer, sizeof(error_buffer));
+    
+    if (result != 0) {
+        tui_print_error(error_buffer);
+        return ph_ERROR_EXEC_FAILED;
+    }
 
-    return result == 0 ? ph_SUCCESS : ph_ERROR_EXEC_FAILED;
+    return ph_SUCCESS;
 }
 
 static phStatus handle_drift_command(int argc, const char** argv) {
