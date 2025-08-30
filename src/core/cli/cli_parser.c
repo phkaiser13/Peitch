@@ -30,7 +30,7 @@
 #include "libs/liblogger/Logger.hpp"
 #include "scripting/lua-h/lua_bridge.h"
 #include "commands/kube_handler.h"
-#include "commands/local_handler.h"
+// #include "commands/local_handler.h" // Decoupled: To be replaced by registration
 #include "commands/runners_handler.h"
 #include "commands/secrets_handler.h"
 #include "commands/policy_handler.h"
@@ -38,6 +38,30 @@
 #include "commands/preview_handler.h"
 #include <stdio.h>
 #include <string.h>
+
+// --- Command Registration Mechanism ---
+
+typedef phStatus (*CommandHandler)(int, const char**);
+
+typedef struct {
+    const char* command_name;
+    CommandHandler handler;
+} RegisteredCommand;
+
+#define MAX_COMMANDS 16
+static RegisteredCommand registered_commands[MAX_COMMANDS];
+static int registered_command_count = 0;
+
+void cli_register_command_group(const char* name, CommandHandler handler) {
+    if (registered_command_count < MAX_COMMANDS) {
+        registered_commands[registered_command_count].command_name = name;
+        registered_commands[registered_command_count].handler = handler;
+        registered_command_count++;
+        logger_log_fmt(LOG_LEVEL_INFO, "CLI", "Successfully registered command group: '%s'", name);
+    } else {
+        logger_log_fmt(LOG_LEVEL_ERROR, "CLI", "Failed to register command group '%s': Maximum number of commands reached.", name);
+    }
+}
 
 /**
  * @see cli_parser.h
@@ -53,7 +77,21 @@ phStatus cli_dispatch_command(int argc, const char** argv) {
     const char* command = argv[1];
     logger_log_fmt(LOG_LEVEL_INFO, "CLI", "Attempting to dispatch command: '%s'", command);
 
-    // --- STAGE 1: Check for special command groups ---
+    // --- STAGE 1: Check for dynamically registered command groups ---
+    for (int i = 0; i < registered_command_count; ++i) {
+        if (strcmp(command, registered_commands[i].command_name) == 0) {
+            logger_log_fmt(LOG_LEVEL_INFO, "CLI", "Command group '%s' identified via registration. Delegating.", command);
+            if (argc < 3) {
+                char error_msg[256];
+                snprintf(error_msg, sizeof(error_msg), "The '%s' command requires a subcommand.", command);
+                tui_print_error(error_msg);
+                return ph_ERROR_INVALID_ARGS;
+            }
+            return registered_commands[i].handler(argc - 2, &argv[2]);
+        }
+    }
+
+    // --- STAGE 2: Check for hardcoded special command groups ---
     // This is the first layer of dispatch, handling command suites.
     if (strcmp(command, "kube") == 0) {
         logger_log(LOG_LEVEL_INFO, "CLI", "Command group 'kube' identified. Delegating to kube_handler.");
@@ -62,14 +100,6 @@ phStatus cli_dispatch_command(int argc, const char** argv) {
             return ph_ERROR_INVALID_ARGS;
         }
         return handle_kube_command(argc - 2, &argv[2]);
-
-    } else if (strcmp(command, "local") == 0) {
-        logger_log(LOG_LEVEL_INFO, "CLI", "Command group 'local' identified. Delegating to local_handler.");
-        if (argc < 3) {
-            tui_print_error("The 'local' command requires a subcommand.");
-            return ph_ERROR_INVALID_ARGS;
-        }
-        return handle_local_command(argc - 2, &argv[2]);
 
     } else if (strcmp(command, "runners") == 0) {
         logger_log(LOG_LEVEL_INFO, "CLI", "Command group 'runners' identified. Delegating to runners_handler.");

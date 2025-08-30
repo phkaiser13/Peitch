@@ -24,7 +24,7 @@ use std::panic;
 
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
-    group = "ph.kaiser.io",
+    group = "ph.io",
     version = "v1alpha1",
     kind = "phAutoHealRule",
     namespaced
@@ -33,7 +33,7 @@ use std::panic;
 pub struct PhAutoHealRuleSpec {
     pub trigger_name: String,
     pub cooldown: String,
-    pub actions: Vec<HealAction>,
+    pub actions_str: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
@@ -118,13 +118,14 @@ async fn run_internal(json_str: &str) -> Result<()> {
     let request: AutoHealRequest = serde_json::from_str(json_str)
         .context("Failed to deserialize JSON payload")?;
 
-    let actions = parse_actions_str(&request.actions_str)?;
+    // Logic to parse actions_str has been removed. The module is now a "dumb" client.
 
     let client = Client::try_default().await.context("Failed to create Kubernetes client")?;
     let api: Api<phAutoHealRule> = Api::namespaced(client, &request.namespace);
 
     let rule_name = format!("autoheal-rule-{}", request.trigger_name);
 
+    // The spec now includes the raw actions_str, to be parsed by the operator.
     let rule = phAutoHealRule {
         metadata: ObjectMeta {
             name: Some(rule_name.clone()),
@@ -134,7 +135,7 @@ async fn run_internal(json_str: &str) -> Result<()> {
         spec: PhAutoHealRuleSpec {
             trigger_name: request.trigger_name,
             cooldown: request.cooldown,
-            actions,
+            actions_str: request.actions_str, // Pass the raw string
         },
         status: None,
     };
@@ -143,43 +144,6 @@ async fn run_internal(json_str: &str) -> Result<()> {
     api.patch(&rule_name, &ssapply, &Patch::Apply(&rule)).await
         .with_context(|| format!("Failed to apply phAutoHealRule '{}'", rule_name))?;
 
-    log::info!("Successfully applied phAutoHealRule '{}'.", rule_name);
+    log::info!("Successfully applied phAutoHealRule '{}' with raw actions string.", rule_name);
     Ok(())
-}
-
-fn parse_actions_str(actions_str: &str) -> Result<Vec<HealAction>> {
-    let mut actions = Vec::new();
-    for action_part in actions_str.split(',') {
-        let parts: Vec<&str> = action_part.trim().split(':').collect();
-        let action_name = parts.get(0).ok_or_else(|| anyhow!("Empty action part"))?;
-
-        let heal_action = match *action_name {
-            "redeploy" => {
-                let target = parts.get(1).map(|s| s.trim()).ok_or_else(|| anyhow!("Missing target for redeploy action"))?;
-                HealAction {
-                    redeploy: Some(RedeployAction { target: target.to_string() }),
-                    ..Default::default()
-                }
-            }
-            "scale-up" => {
-                let target = parts.get(1).map(|s| s.trim()).ok_or_else(|| anyhow!("Missing target for scale-up action"))?;
-                let replicas_str = parts.get(2).map(|s| s.trim()).ok_or_else(|| anyhow!("Missing replica count for scale-up action"))?;
-                let replicas = replicas_str.parse::<i32>().context("Invalid replica count for scale-up")?;
-                HealAction {
-                    scale_up: Some(ScaleUpAction { target: target.to_string(), replicas }),
-                    ..Default::default()
-                }
-            }
-            "runbook" => {
-                let script_name = parts.get(1).map(|s| s.trim()).ok_or_else(|| anyhow!("Missing scriptName for runbook action"))?;
-                HealAction {
-                    runbook: Some(RunbookAction { script_name: script_name.to_string() }),
-                    ..Default::default()
-                }
-            }
-            _ => return Err(anyhow!("Unknown action type: {}", action_name)),
-        };
-        actions.push(heal_action);
-    }
-    Ok(actions)
 }

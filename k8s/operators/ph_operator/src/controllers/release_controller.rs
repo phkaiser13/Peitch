@@ -76,6 +76,8 @@ use thiserror::Error;
 use tracing::{info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::crds::{CanaryStep, Metric as CrdMetric};
+
 // The unique identifier for our controller's finalizer.
 const RELEASE_FINALIZER: &str = "ph.io/release-finalizer";
 const SKIP_SIG_CHECK_ANNOTATION: &str = "ph.io/skip-sig-check";
@@ -169,6 +171,71 @@ pub async fn reconcile(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Act
 /// The core logic for creating and managing a Canary release, now a state machine.
 use tracing::field;
 
+/// A validated and structured representation of the canary strategy, parsed from the raw spec.
+struct ValidatedCanaryStrategy {
+    steps: Vec<CanaryStep>,
+    analysis: Option<Analysis>,
+    auto_promote: bool,
+}
+
+/// Parses the raw string fields from the phRelease spec into a validated, structured representation.
+fn parse_and_validate_canary_spec(
+    release: &phRelease,
+) -> Result<ValidatedCanaryStrategy, anyhow::Error> {
+    let spec = release.spec.as_ref().ok_or_else(|| anyhow!("Missing spec"))?;
+    let canary_spec = spec
+        .strategy
+        .canary
+        .as_ref()
+        .ok_or_else(|| anyhow!("Canary strategy not defined in spec"))?;
+
+    // --- Parse Steps ---
+    let mut steps = Vec::new();
+    if let Some(steps_str) = &canary_spec.steps_str {
+        for s in steps_str.split(',') {
+            let weight = s
+                .trim()
+                .parse::<i32>()
+                .context(format!("Invalid step value: '{}'", s))?;
+            steps.push(CanaryStep {
+                set_weight: weight,
+                // The analysis_window concept is simplified; we use one window for the whole analysis.
+            });
+        }
+    } else {
+        // Default to a single step of 100% if --steps is not provided
+        steps.push(CanaryStep { set_weight: 100 });
+    }
+
+    // --- Parse Metrics and build Analysis ---
+    let mut metrics = Vec::new();
+    if let Some(metric_str) = &canary_spec.metric_str {
+        let metric: CrdMetric = serde_json::from_str(metric_str)
+            .context("Failed to parse --metric flag. It must be a valid JSON string.")?;
+        metrics.push(metric);
+    }
+
+    let analysis = if !metrics.is_empty() {
+        Some(Analysis {
+            interval: canary_spec
+                .analysis_window_str
+                .clone()
+                .unwrap_or_else(|| "5m".to_string()),
+            threshold: 5,    // Default value
+            max_failures: 2, // Default value
+            metrics,
+        })
+    } else {
+        None
+    };
+
+    Ok(ValidatedCanaryStrategy {
+        steps,
+        analysis,
+        auto_promote: canary_spec.auto_promote,
+    })
+}
+
 async fn apply_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Action, Error> {
     let span = info_span!(
         "apply_release",
@@ -229,6 +296,22 @@ async fn apply_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Act
         }
     }
 
+    // --- 2. PARSE AND VALIDATE SPEC ---
+    let validated_canary_strategy = match parse_and_validate_canary_spec(&release) {
+        Ok(validated_spec) => validated_spec,
+        Err(e) => {
+            let error_message = format!("Invalid canary spec: {}", e);
+            println!("❌ Release '{}' failed: {}", release_name, error_message);
+            let new_status = phReleaseStatus {
+                phase: Some(ReleasePhase::Failed),
+                traffic_split: Some(format!("Error: {}", error_message)),
+                ..status.clone()
+            };
+            update_status(&releases, &release_name, new_status).await?;
+            return Ok(Action::await_change());
+        }
+    };
+
     // Determine the current phase, defaulting to Progressing if not set.
     let current_phase = status.phase.clone().unwrap_or(ReleasePhase::Progressing);
     span.record("ph.release.phase", &serde_json::to_string(&current_phase).unwrap_or_default());
@@ -249,11 +332,7 @@ async fn apply_release(release: Arc<phRelease>, ctx: Arc<Context>) -> Result<Act
             }
 
             // Deployments exist, proceed with the analysis loop if configured.
-            let canary_spec = spec
-                .strategy
-                .canary
-                .as_ref()
-                .ok_or(Error::UnsupportedStrategy)?;
+            let canary_spec = validated_canary_strategy;
 
             /* BEGIN CHANGE: Implement automated metrics analysis loop.
              * This block contains the core logic for integrating the metrics_analyzer.

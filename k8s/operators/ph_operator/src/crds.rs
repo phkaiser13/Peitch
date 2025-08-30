@@ -157,6 +157,14 @@ pub struct CanaryStrategy {
     pub analysis: Option<Analysis>,
     #[serde(default)]
     pub auto_promote: bool,
+
+    // Raw strings from CLI, to be parsed by controller
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps_str: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metric_str: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_window_str: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -165,6 +173,8 @@ pub struct Analysis {
     pub interval: String,
     pub threshold: u32,
     pub max_failures: u32,
+    // This will be populated by the controller after parsing metric_str
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metrics: Vec<Metric>,
 }
 
@@ -353,7 +363,7 @@ pub enum PipelinePhase {
 /// corresponding Prometheus alert is received via Alertmanager.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "ph.kaiser.io",
+    group = "ph.io",
     version = "v1alpha1",
     kind = "phAutoHealRule",
     namespaced,
@@ -374,8 +384,9 @@ pub struct phAutoHealRuleSpec {
     /// too frequently. The format should be a duration string like "5m", "1h", "30s".
     pub cooldown: String,
 
-    /// A list of actions to execute sequentially when the rule is triggered.
-    pub actions: Vec<ActionSpec>,
+    /// A raw string defining actions to be parsed by the controller.
+    /// E.g., "redeploy:my-app,scale-up:my-app:3"
+    pub actions_str: String,
 }
 
 /// Defines a single action to be performed by the auto-heal controller.
@@ -502,6 +513,52 @@ pub struct phAutoHealRuleStatus {
     /// Human-readable status conditions for the resource.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<StatusCondition>,
+}
+
+
+// --- PhgitSyncJob Custom Resource Definition ---
+
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "ph.io",
+    version = "v1alpha1",
+    kind = "PhgitSyncJob",
+    namespaced,
+    status = "PhgitSyncJobStatus",
+    shortname = "pgsj"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct PhgitSyncJobSpec {
+    pub path: String,
+    pub cluster: String,
+    #[serde(default)]
+    pub apply: bool,
+    #[serde(default)]
+    pub force: bool,
+    #[serde(default)]
+    pub skip_signature_verification: bool,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PhgitSyncJobStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<SyncJobPhase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<StatusCondition>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, PartialEq)]
+#[serde(rename_all = "PascalCase")]
+pub enum SyncJobPhase {
+    Pending,
+    Syncing,
+    Succeeded,
+    Failed,
 }
 
 // --- PhgitAudit Custom Resource Definition ---

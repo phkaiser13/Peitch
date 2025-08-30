@@ -47,47 +47,15 @@ async fn handle_start(config: StartConfig) -> Result<()> {
         .context("Failed to create Kubernetes client")?;
     let releases: Api<PhgitRelease> = Api::namespaced(client, RELEASE_NAMESPACE);
 
-    // --- Build Canary Strategy from CLI flags ---
-    let mut steps = Vec::new();
-    if let Some(steps_str) = config.steps {
-        for s in steps_str.split(',') {
-            let weight = s.trim().parse::<i32>().context(format!("Invalid step value: '{}'. Steps must be comma-separated integers.", s))?;
-            steps.push(CanaryStep {
-                set_weight: weight,
-                analysis_window: config.analysis_window.clone(),
-            });
-        }
-    } else {
-        // Default to a single step of 100% if --steps is not provided
-        steps.push(CanaryStep {
-            set_weight: 100,
-            analysis_window: config.analysis_window.clone(),
-        });
-    }
-
-    let mut metrics = Vec::new();
-    if let Some(metric_str) = config.metric {
-        // Assuming the metric is passed as a JSON string for simplicity
-        let metric: Metric = serde_json::from_str(&metric_str)
-            .context("Failed to parse --metric flag. It must be a valid JSON string representing a single metric.")?;
-        metrics.push(metric);
-    }
-
-    let analysis = if !metrics.is_empty() {
-        Some(Analysis {
-            interval: config.analysis_window.clone().unwrap_or_else(|| "5m".to_string()),
-            threshold: 5, // Default value
-            max_failures: 2, // Default value
-            metrics,
-        })
-    } else {
-        None
-    };
-
+    // --- Build a "dumb" Canary Strategy ---
+    // All parsing logic is moved to the operator. This module just passes the raw strings.
     let canary_strategy = CanaryStrategy {
-        steps,
-        analysis,
+        steps_str: config.steps,
+        metric_str: config.metric,
+        analysis_window_str: config.analysis_window,
         auto_promote: true, // Defaulting to true for now
+        steps: vec![], // This will be populated by the controller
+        analysis: None, // This will be populated by the controller
     };
 
     let strategy = Strategy {
@@ -119,7 +87,7 @@ async fn handle_start(config: StartConfig) -> Result<()> {
         .await
         .context(format!("Failed to create PhgitRelease resource for app '{}'", config.app))?;
 
-    println!("✅ PhgitRelease resource '{}' created successfully with a canary strategy.", config.app);
+    println!("✅ PhgitRelease resource '{}' created successfully. The operator will now process the rollout.", config.app);
     Ok(())
 }
 
