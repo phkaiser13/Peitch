@@ -115,6 +115,8 @@ static phStatus handle_preview_create_command(int argc, const char** argv) {
     const char* db_snapshot = NULL;
     bool anonymize_db = false;
     const char* env_file = NULL;
+    const char* namespace = NULL;
+    const char* helm_values = NULL;
 
 
     for (int i = 0; i < argc; ++i) {
@@ -126,6 +128,8 @@ static phStatus handle_preview_create_command(int argc, const char** argv) {
         else if (strcmp(argv[i], "--db-snapshot") == 0 && i + 1 < argc) db_snapshot = argv[++i];
         else if (strcmp(argv[i], "--anonymize-db") == 0) anonymize_db = true;
         else if (strcmp(argv[i], "--env-file") == 0 && i + 1 < argc) env_file = argv[++i];
+        else if (strcmp(argv[i], "--namespace") == 0 && i + 1 < argc) namespace = argv[++i];
+        else if (strcmp(argv[i], "--helm-values") == 0 && i + 1 < argc) helm_values = argv[++i];
     }
 
     if (!pr_str || !repo_url) {
@@ -176,6 +180,18 @@ static phStatus handle_preview_create_command(int argc, const char** argv) {
         ptr += snprintf(ptr, end - ptr, ",\"env_file\":\"%s\"", env_file);
     }
 
+    if (namespace) {
+        ptr += snprintf(ptr, end - ptr, ",\"namespace\":\"%s\"", namespace);
+    }
+
+    if (image) {
+        ptr += snprintf(ptr, end - ptr, ",\"image\":\"%s\"", image);
+    }
+
+    if (helm_values) {
+        ptr += snprintf(ptr, end - ptr, ",\"helm_values\":\"%s\"", helm_values);
+    }
+
     // --- OpenTelemetry: Inject Context ---
     if (traceparent) {
         ptr += snprintf(ptr, end - ptr, ",\"annotations\":{\"ph.io/trace-context\":\"%s\"}", traceparent);
@@ -203,10 +219,12 @@ static phStatus handle_preview_create_command(int argc, const char** argv) {
 static phStatus handle_preview_logs_command(int argc, const char** argv) {
     const char* pr_str = NULL;
     const char* component_name = NULL;
+    bool follow = false;
 
     for (int i = 0; i < argc; ++i) {
         if (strcmp(argv[i], "--pr") == 0 && i + 1 < argc) pr_str = argv[++i];
         else if (strcmp(argv[i], "--component") == 0 && i + 1 < argc) component_name = argv[++i];
+        else if (strcmp(argv[i], "--follow") == 0) follow = true;
     }
 
     if (!pr_str || !component_name) {
@@ -221,9 +239,16 @@ static phStatus handle_preview_logs_command(int argc, const char** argv) {
     }
 
     char json_payload[1024];
-    snprintf(json_payload, sizeof(json_payload),
-             "{\"action\":\"logs\",\"pr_number\":%ld,\"component_name\":\"%s\"}",
-             pr_number, component_name);
+    char* ptr = json_payload;
+    const char* end = json_payload + sizeof(json_payload);
+
+    ptr += snprintf(ptr, end - ptr, "{\"action\":\"logs\",\"pr_number\":%ld,\"component_name\":\"%s\"", pr_number, component_name);
+
+    if (follow) {
+        ptr += snprintf(ptr, end - ptr, ",\"follow\":true");
+    }
+
+    snprintf(ptr, end - ptr, "}");
 
     logger_log_fmt(LOG_LEVEL_DEBUG, "PreviewHandler", "Calling 'run_preview_manager' for logs with payload: %s", json_payload);
     int result = run_preview_manager(json_payload);
@@ -234,6 +259,7 @@ static phStatus handle_preview_logs_command(int argc, const char** argv) {
 static phStatus handle_preview_exec_command(int argc, const char** argv) {
     const char* pr_str = NULL;
     const char* component_name = NULL;
+    const char* container_name = NULL;
     int command_start_index = -1;
 
     for (int i = 0; i < argc; ++i) {
@@ -241,6 +267,8 @@ static phStatus handle_preview_exec_command(int argc, const char** argv) {
             pr_str = argv[++i];
         } else if (strcmp(argv[i], "--component") == 0 && i + 1 < argc) {
             component_name = argv[++i];
+        } else if (strcmp(argv[i], "--container") == 0 && i + 1 < argc) {
+            container_name = argv[++i];
         } else if (strcmp(argv[i], "--") == 0) {
             command_start_index = i + 1;
             break;
@@ -262,7 +290,13 @@ static phStatus handle_preview_exec_command(int argc, const char** argv) {
     char* ptr = json_payload;
     const char* end = json_payload + sizeof(json_payload);
 
-    ptr += snprintf(ptr, end - ptr, "{\"action\":\"exec\",\"pr_number\":%ld,\"component_name\":\"%s\",\"command_to_exec\":[", pr_number, component_name);
+    ptr += snprintf(ptr, end - ptr, "{\"action\":\"exec\",\"pr_number\":%ld,\"component_name\":\"%s\"", pr_number, component_name);
+
+    if (container_name) {
+        ptr += snprintf(ptr, end - ptr, ",\"container_name\":\"%s\"", container_name);
+    }
+
+    ptr += snprintf(ptr, end - ptr, ",\"command_to_exec\":[");
 
     for (int i = command_start_index; i < argc; ++i) {
         ptr += snprintf(ptr, end - ptr, "\"%s\"%s", argv[i], (i == argc - 1) ? "" : ",");
